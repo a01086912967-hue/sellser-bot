@@ -41,7 +41,7 @@ class AdminControlView(discord.ui.View):
             description=(
                 f"{self.applicant.mention} 님, 개인정보 인증이 완료되었습니다.\n\n"
                 f"• **우리은행 `49306531218364` (ㅈㅈㅎ)**\n"
-                f"• **금액: 14,000원 (14일)**\n\n"
+                f"• **금액: 14,000원 (7일)**\n\n"
                 f"입금하고 이중창 인증 후 관리자가 확인하여 처리됩니다."
             ),
             color=0xf1c40f
@@ -121,7 +121,7 @@ class MainMenuView(discord.ui.View):
             title="📖 진행자 안내",
             description="""**디코 / 옾챗 내에서 구매자에게 판매하는 역할입니다. **
 **구매 문의부터 거래 진행, 상품 지급까지 전부 당담해야 됩니다**
-일주일 <a:white_arrow:1489570377440165990> 7,000원
+일주일 <a:white_arrow:1489570377440165990> 14,000원
 -# 최대 14일만 신청됩니다.""",
             color=0x3498db
         )
