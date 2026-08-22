@@ -417,21 +417,61 @@ async def check_expired_licenses():
 
 
 # ==========================================
-# 4. 임베드 및 패널 생성 함수
+# 4. 컴포넌트 V2 (컨테이너 UI) 페이로드 생성
 # ==========================================
-def create_main_embed():
-    embed = discord.Embed(
-        title="<:store:1540740445330739210> 디코 / 오픈채팅 진행자 신청 및 등록",
-        description=(
-            "• **진행자 신청**: 티켓 생성 후 안내 절차 진행\n"
-            "• **라이센스 등록**: 발급받은 코드 입력 시 역할 지급 및 만료 시간 적용 (7일)\n"
-            "-# <:emoji_109:1523981022826336406> 장난으로 생성한 경우 제재됩니다. <a:Warning_2:1490617932487594004>\n\n"
-            "───────────────────────────────\n"
-            "• 아래 버튼을 눌러 진행자 신청 및 라이센스 등록을 진행해 주세요."
-        ),
-        color=PASTEL_PINK
-    )
-    return embed
+def get_container_payload():
+    return {
+        "flags": 8192,  # IS_COMPONENTS_V2 (상자 내부에 버튼까지 감싸는 최신 UI 방식)
+        "components": [
+            {
+                "type": 17,  # Container
+                "accent_color": PASTEL_PINK,
+                "components": [
+                    {
+                        "type": 10,  # TextDisplay
+                        "content": (
+                            "**<:store:1540740445330739210> 디코 / 오픈채팅 진행자 신청 및 등록**\n\n"
+                            "• **진행자 신청**: 티켓 생성 후 안내 절차 진행\n"
+                            "• **라이센스 등록**: 발급받은 코드 입력 시 역할 지급 및 만료 시간 적용 (7일)\n"
+                            "-# <:emoji_109:1523981022826336406> 장난으로 생성한 경우 제재됩니다. <a:Warning_2:1490617932487594004>\n\n"
+                            "아래 버튼을 눌러 진행하세요."
+                        )
+                    },
+                    {
+                        "type": 14,  # Separator (상자 내부 회색 구분선)
+                        "divider": True,
+                        "spacing": 1
+                    },
+                    {
+                        "type": 1,  # ActionRow (버튼 그룹)
+                        "components": [
+                            {
+                                "type": 2,
+                                "style": 3,  # 초록색
+                                "label": "진행자 신청",
+                                "emoji": {"id": "1540740445330739210", "name": "store"},
+                                "custom_id": "main_apply"
+                            },
+                            {
+                                "type": 2,
+                                "style": 1,  # 파란색
+                                "label": "라이센스 등록",
+                                "emoji": {"name": "🔑"},
+                                "custom_id": "main_register_license"
+                            },
+                            {
+                                "type": 2,
+                                "style": 2,  # 회색
+                                "label": "진행자 설명",
+                                "emoji": {"name": "📖"},
+                                "custom_id": "main_info"
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
 
 
 # ==========================================
@@ -463,25 +503,26 @@ async def on_message(message):
     await bot.process_commands(message)
 
 
-# 1️⃣ 일반 채팅 명령어 (!메인메뉴생성)
+# 1️⃣ 채팅 명령어 방식 (!메인메뉴생성)
 @bot.command(name="메인메뉴생성")
 @commands.has_permissions(administrator=True)
 async def make_main_chat(ctx):
-    embed = create_main_embed()
-    await ctx.send(embed=embed, view=MainMenuView())
+    payload = get_container_payload()
+    await bot.http.send_message(ctx.channel.id, **payload)
     try:
         await ctx.message.delete()
     except Exception:
         pass
 
 
-# 2️⃣ 슬래시 명령어 (/메인메뉴생성)
-@bot.tree.command(name="메인메뉴생성", description="[관리자] 메인 패널을 생성합니다.")
+# 2️⃣ 슬래시 명령어 방식 (/메인메뉴생성) -> 에러 안 나게 완전 보정 완료
+@bot.tree.command(name="메인메뉴생성", description="[관리자] 메인 컨테이너 패널을 생성합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def make_main_slash(interaction: discord.Interaction):
-    embed = create_main_embed()
-    await interaction.response.send_message("✅ 메인 패널 생성이 완료되었습니다!", ephemeral=True)
-    await interaction.channel.send(embed=embed, view=MainMenuView())
+    # 디스코드 응답을 처리해 무한 '생각 중...'을 방지
+    await interaction.response.send_message("✅ 컨테이너 메인 패널을 생성했습니다!", ephemeral=True)
+    payload = get_container_payload()
+    await interaction.client.http.send_message(interaction.channel_id, **payload)
 
 
 @bot.event
