@@ -18,8 +18,8 @@ ADMIN_PANEL_CHANNEL_ID = 1540725362776871034  # 관리자 제어 패널 채널 I
 LICENSE_ROLE_ID = 1540733768275333270   # 라이센스 보유자 역할 ID (<@&1540733768275333270>)
 IMAGE_FILE_NAME = "guide.png"           # 안내 이미지
 
-# 색상 상수
-PASTEL_PINK = 0xFFB6C1                  # 파스텔 연핑크 색상 코드
+# 색상 상수 (사진 속 연한 파스텔 분홍색)
+PASTEL_PINK = 0xFFB6C1
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -223,7 +223,6 @@ class AdminControlView(discord.ui.View):
             await interaction.response.send_message("❌ 관리자만 클릭할 수 있습니다.", ephemeral=True)
             return
 
-        # 1. 7일 권한 라이센스 코드 생성
         license_code = f"KEY-{uuid.uuid4().hex[:12].upper()}"
         license_db[license_code] = {
             "days": 7,
@@ -232,7 +231,6 @@ class AdminControlView(discord.ui.View):
             "expires_at": None
         }
 
-        # 2. 입금 완료 임베드 수정/전송
         completed_embed = discord.Embed(
             title="<a:check:1518257176811012217> 입금이 완료되었습니다",
             description=f"{self.applicant.mention} 님의 입금이 확인되어 **진행자 신청이 승인**되었습니다!",
@@ -246,7 +244,6 @@ class AdminControlView(discord.ui.View):
         else:
             await self.ticket_channel.send(embed=completed_embed)
 
-        # 3. 원래 안내 임베드 그대로 유지하여 전송
         lic_embed = discord.Embed(
             title="🔑 7일 라이센스 코드가 발급되었습니다",
             description=f"{self.applicant.mention} 님, 아래 발급된 코드를 복사하여 사용해 주세요.",
@@ -264,10 +261,8 @@ class AdminControlView(discord.ui.View):
         )
         await self.ticket_channel.send(embed=lic_embed)
         
-        # 4. 임베드 아래에 순수 텍스트 형태로만 코드 전송
         await self.ticket_channel.send(license_code)
 
-        # 5. 개인 DM 전송
         try:
             dm_embed = discord.Embed(
                 title="🎁 [7일 라이센스 코드 발급 완료]",
@@ -430,12 +425,13 @@ class ConfirmApplyView(discord.ui.View):
         await interaction.response.send_message("신청이 취소되었습니다.", ephemeral=True)
 
 
-# [메인 메뉴 고정 버튼]
+# [사진 속 디자인에 맞춘 메인 메뉴 버튼 뷰]
 class MainMenuView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="🎫 진행자 신청", style=discord.ButtonStyle.primary, custom_id="main_apply")
+    # 1) 등록 (초록색 버튼 + 그래프 이모지)
+    @discord.ui.button(label="등록", style=discord.ButtonStyle.success, emoji="📈", custom_id="main_apply")
     async def apply(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(
             "**진행자를 신청하시겠습니까?**",
@@ -443,11 +439,8 @@ class MainMenuView(discord.ui.View):
             ephemeral=True
         )
 
-    @discord.ui.button(label="🔑 라이센스 등록", style=discord.ButtonStyle.success, custom_id="main_register_license")
-    async def register_license(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(LicenseRegisterModal())
-
-    @discord.ui.button(label="📖 진행자 설명", style=discord.ButtonStyle.secondary, custom_id="main_info")
+    # 2) 정보 (파란색 버튼 + 클립보드 이모지)
+    @discord.ui.button(label="정보", style=discord.ButtonStyle.primary, emoji="📋", custom_id="main_info")
     async def info(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = discord.Embed(
             title="📖 진행자 안내",
@@ -458,6 +451,16 @@ class MainMenuView(discord.ui.View):
             color=PASTEL_PINK
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # 3) 연장 (회색 버튼 + 시계 이모지)
+    @discord.ui.button(label="연장", style=discord.ButtonStyle.secondary, emoji="⏰", custom_id="main_register_license")
+    async def register_license(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(LicenseRegisterModal())
+
+    # 4) 가이드 (회색 버튼 + 책 이모지)
+    @discord.ui.button(label="가이드", style=discord.ButtonStyle.secondary, emoji="📖", custom_id="main_guide")
+    async def guide(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("가이드 메뉴입니다. 안내 문구를 확인해주세요.", ephemeral=True)
 
 
 # ==========================================
@@ -564,23 +567,41 @@ async def on_message(message):
     await bot.process_commands(message)
 
 
-@bot.tree.command(name="메인메뉴생성", description="[관리자] 신청 및 라이센스 등록 메인 버튼 메시지를 생성합니다.")
+# 🌟 [사진 레이아웃 구현 명령어] 2개 임베드 배열 + 푸터 텍스트 구조
+@bot.tree.command(name="메인메뉴생성", description="[관리자] 상단배너 및 진행자 신청 메인 메뉴를 생성합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def make_main(interaction: discord.Interaction):
-    # 이미지처럼 하단에 구분선을 넣어 버튼이 임베드 안에 자연스럽게 감싸지도록 연출
-    embed = discord.Embed(
-        title="<:store:1540740445330739210> 디코 / 오픈채팅 진행자 신청 및 등록",
-        description="""판매자 신청 및 라이센스 등록은 아래 버튼을 눌러주세요.
-
-• **진행자 신청**: 티켓 생성 후 안내 절차 진행
-
-• **라이센스 등록**: 발급받은 코드 입력 시 역할 지급 및 만료 시간 적용 (7일)
--# <:emoji_109:1523981022826336406> 장난으로 생성한 경우 제재됩니다. <a:Warning_2:1490617932487594004>
-
-───────────────────────────""",
+    # 상단 1번 임베드 (설명 상자)
+    embed1 = discord.Embed(
+        title="<:store:1540740445330739210> PAPADOG SHOP | TOP BANNER",
+        description=(
+            "• 등록 버튼으로 상단배너 채널을 커스텀 후 등록할 수 있어요.\n"
+            "• 정보 버튼으로 정보 확인은 물론 상단배너 채널의 커스텀까지 가능해요.\n"
+            "• 연장 버튼으로 자신이 만든 상단배너 채널의 연장이 가능해요.\n"
+            "• 가이드 버튼으로 상단배너 봇에 대한 가이드를 확인할 수 있어요."
+        ),
         color=PASTEL_PINK
     )
-    await interaction.channel.send(embed=embed, view=MainMenuView())
+
+    # 하단 2번 임베드 (버튼 상자)
+    embed2 = discord.Embed(
+        title="🏠 상단배너 시작 / 관리하기",
+        description=(
+            "• 가이드를 참고하여 상단배너를 등록하고 관리해보세요.\n\n"
+            "───────────────────────────"
+        ),
+        color=PASTEL_PINK
+    )
+
+    # 맨 아래 푸터 텍스트
+    footer_text = "│ Copyright 2026. **PAPADOG SHOP (파파독샵)**. All rights reserved."
+
+    # 2개 임베드를 배열(embeds)로 함께 전송
+    await interaction.channel.send(
+        content=footer_text,
+        embeds=[embed1, embed2],
+        view=MainMenuView()
+    )
     await interaction.response.send_message("메인 메뉴 생성 완료!", ephemeral=True)
 
 
