@@ -49,7 +49,6 @@ class RejectReasonModal(discord.ui.Modal, title="신청 거절 사유 입력"):
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer()
 
-        # 1. 티켓 채널에 메시지 전송
         embed = discord.Embed(
             title="❌ 진행자 신청이 거절되었습니다",
             description=f"{self.applicant.mention} 님의 진행자 신청이 아래 사유로 인해 거절되었습니다.",
@@ -64,7 +63,6 @@ class RejectReasonModal(discord.ui.Modal, title="신청 거절 사유 입력"):
         await self.ticket_channel.send(content=f"{self.applicant.mention}", embed=embed)
         await interaction.followup.send("거절 처리가 완료되었습니다. 5초 후 티켓이 삭제됩니다.", ephemeral=True)
 
-        # 2. 기록 채널에 로그 남기기
         log_embed = discord.Embed(
             title="🔴 [신청 거절 기록]",
             color=0xe74c3c
@@ -75,7 +73,6 @@ class RejectReasonModal(discord.ui.Modal, title="신청 거절 사유 입력"):
         log_embed.set_footer(text=f"티켓 채널: {self.ticket_channel.name}")
         await send_log(interaction.guild, log_embed)
 
-        # 3. 티켓 채널 삭제
         await asyncio.sleep(5)
         await self.ticket_channel.delete()
 
@@ -97,7 +94,6 @@ class HoldReasonModal(discord.ui.Modal, title="신청 보류 사유 입력"):
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer()
 
-        # 1. 티켓 채널 메시지 전송
         embed = discord.Embed(
             title="⏸️ 진행자 신청이 보류되었습니다",
             description=f"{self.applicant.mention} 님의 진행자 신청이 보류 처리되었습니다.",
@@ -111,7 +107,6 @@ class HoldReasonModal(discord.ui.Modal, title="신청 보류 사유 입력"):
         await self.ticket_channel.send(content=f"{self.applicant.mention}", embed=embed)
         await interaction.followup.send("보류 처리가 완료되었습니다.", ephemeral=True)
 
-        # 2. 기록 채널에 로그 남기기
         log_embed = discord.Embed(
             title="🟠 [신청 보류 기록]",
             color=0xe67e22
@@ -123,15 +118,35 @@ class HoldReasonModal(discord.ui.Modal, title="신청 보류 사유 입력"):
         await send_log(interaction.guild, log_embed)
 
 
-# [입금 승인 및 입금 거절 버튼]
-class PaymentActionView(discord.ui.View):
+# [관리자 전용 제어 패널 - 지정된 관리자 채널 전송용]
+class AdminControlView(discord.ui.View):
     def __init__(self, applicant: discord.Member, ticket_channel: discord.TextChannel):
         super().__init__(timeout=None)
         self.applicant = applicant
         self.ticket_channel = ticket_channel
 
-    # 입금 승인 버튼
-    @discord.ui.button(label="🟢 입금 승인", style=discord.ButtonStyle.success, custom_id="pay_approve")
+    # 1. 개인정보 인증 완료 버튼 (입금 진행 중 안내)
+    @discord.ui.button(label="📝 개인정보 인증 완료", style=discord.ButtonStyle.primary, custom_id="admin_cert_ok")
+    async def cert_ok(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ 관리자만 클릭할 수 있습니다.", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="<a:loading:1500567324028043285> 💳 입금 진행 중...",
+            description=(
+                f"{self.applicant.mention} 님, 개인정보 인증이 완료되었습니다.\n"
+                f"아래 계좌로 입금 후 이중창 인증을 완료해 주세요.\n\n"
+                f"• **우리은행 `49306531218364` (ㅈㅈㅎ)**\n"
+                f"• **금액: 14,000원 (7일)**"
+            ),
+            color=0xf1c40f
+        )
+        await self.ticket_channel.send(embed=embed)
+        await interaction.response.send_message("입금 진행 중 안내 메시지를 티켓 채널에 전송했습니다.", ephemeral=True)
+
+    # 2. 입금 승인 버튼
+    @discord.ui.button(label="🟢 입금 승인", style=discord.ButtonStyle.success, custom_id="admin_pay_approve")
     async def pay_approve(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("❌ 관리자만 클릭할 수 있습니다.", ephemeral=True)
@@ -143,9 +158,8 @@ class PaymentActionView(discord.ui.View):
             color=0x2ecc71
         )
         await self.ticket_channel.send(embed=embed)
-        await interaction.response.send_message("입금 승인 처리되었습니다.", ephemeral=True)
+        await interaction.response.send_message("입금 승인 메시지를 전송했습니다.", ephemeral=True)
 
-        # 로그 기록
         log_embed = discord.Embed(
             title="🟢 [신청 승인 기록]",
             color=0x2ecc71
@@ -155,8 +169,8 @@ class PaymentActionView(discord.ui.View):
         log_embed.set_footer(text=f"티켓 채널: {self.ticket_channel.name}")
         await send_log(interaction.guild, log_embed)
 
-    # 입금 거절 버튼
-    @discord.ui.button(label="🔴 입금 거절", style=discord.ButtonStyle.danger, custom_id="pay_reject")
+    # 3. 입금 거절 버튼
+    @discord.ui.button(label="🔴 입금 거절", style=discord.ButtonStyle.danger, custom_id="admin_pay_reject")
     async def pay_reject(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("❌ 관리자만 클릭할 수 있습니다.", ephemeral=True)
@@ -164,13 +178,12 @@ class PaymentActionView(discord.ui.View):
 
         embed = discord.Embed(
             title="❌ 입금 거절 안내",
-            description=f"{self.applicant.mention} 님, 입금 정보가 일치하지 않거나 입금이 확인되지 않아 거절되었습니다. 계좌번호 및 입금자명을 재확인 후 문의해 주세요.",
+            description=f"{self.applicant.mention} 님, 입금 정보가 일치하지 않거나 입금이 확인되지 않았습니다. 계좌 및 입금자명을 재확인 후 문의해 주세요.",
             color=0xe74c3c
         )
         await self.ticket_channel.send(embed=embed)
         await interaction.response.send_message("입금 거절 안내를 전송했습니다.", ephemeral=True)
 
-        # 로그 기록
         log_embed = discord.Embed(
             title="🔴 [입금 거절 기록]",
             color=0xe74c3c
@@ -180,39 +193,7 @@ class PaymentActionView(discord.ui.View):
         log_embed.set_footer(text=f"티켓 채널: {self.ticket_channel.name}")
         await send_log(interaction.guild, log_embed)
 
-
-# [관리자 전용 제어 패널 - 지정된 관리자 채널에 전송]
-class AdminControlView(discord.ui.View):
-    def __init__(self, applicant: discord.Member, ticket_channel: discord.TextChannel):
-        super().__init__(timeout=None)
-        self.applicant = applicant
-        self.ticket_channel = ticket_channel
-
-    # 1. 개인정보 인증 완료 버튼 (클릭 시 입금 안내 + 입금 승인/거절 버튼 출력)
-    @discord.ui.button(label="📝 개인정보 인증 완료", style=discord.ButtonStyle.primary, custom_id="admin_cert_ok")
-    async def cert_ok(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ 관리자만 클릭할 수 있습니다.", ephemeral=True)
-            return
-
-        embed = discord.Embed(
-            title="💳 입금 안내",
-            description=(
-                f"{self.applicant.mention} 님, 개인정보 인증이 완료되었습니다.\n\n"
-                f"• **우리은행 `49306531218364` (ㅈㅈㅎ)**\n"
-                f"• **금액: 14,000원 (7일)**\n\n"
-                f"입금하고 이중창 인증 후 관리자가 확인하여 처리됩니다."
-            ),
-            color=0xf1c40f
-        )
-        # 입금 안내 메시지와 함께 [입금 승인], [입금 거절] 버튼을 첨부하여 티켓 채널에 전송
-        await self.ticket_channel.send(
-            embed=embed,
-            view=PaymentActionView(applicant=self.applicant, ticket_channel=self.ticket_channel)
-        )
-        await interaction.response.send_message("입금 안내 메시지 및 입금 승인/거절 버튼을 티켓 채널에 전송했습니다.", ephemeral=True)
-
-    # 2. 신청 보류 버튼
+    # 4. 신청 보류 버튼
     @discord.ui.button(label="⏸️ 신청 보류", style=discord.ButtonStyle.secondary, custom_id="admin_hold")
     async def hold(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not interaction.user.guild_permissions.administrator:
@@ -221,7 +202,7 @@ class AdminControlView(discord.ui.View):
 
         await interaction.response.send_modal(HoldReasonModal(applicant=self.applicant, ticket_channel=self.ticket_channel))
 
-    # 3. 신청 거절 버튼
+    # 5. 신청 거절 버튼
     @discord.ui.button(label="❌ 신청 거절", style=discord.ButtonStyle.danger, custom_id="admin_reject")
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not interaction.user.guild_permissions.administrator:
@@ -230,7 +211,7 @@ class AdminControlView(discord.ui.View):
 
         await interaction.response.send_modal(RejectReasonModal(applicant=self.applicant, ticket_channel=self.ticket_channel))
 
-    # 4. 티켓 닫기 버튼
+    # 6. 티켓 닫기 버튼
     @discord.ui.button(label="🔒 티켓 닫기", style=discord.ButtonStyle.secondary, custom_id="admin_close_ticket")
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not interaction.user.guild_permissions.administrator:
@@ -239,7 +220,6 @@ class AdminControlView(discord.ui.View):
 
         await interaction.response.send_message("🔒 5초 후 티켓 채널이 삭제됩니다...")
 
-        # 로그 기록
         log_embed = discord.Embed(
             title="🔒 [티켓 종결 기록]",
             color=0x95a5a6
@@ -289,13 +269,15 @@ class ApplicationModal(discord.ui.Modal, title="진행자 신청서 작성"):
             overwrites=overwrites
         )
 
-        # 2. 티켓 채널 내 상단 멘션 및 제출된 양식 전송
+        # 2. 상단 멘션 및 동의 안내 문구 출력 (로딩 이모지 적용)
         await ticket_channel.send(
-            f"{member.mention} 님 안녕하세요. <@&{ADMIN_ROLE_ID}> 가 곧 옵니다.\n잠시만 기다려 주세요."
+            f"{member.mention} 님 안녕하세요. <@&{ADMIN_ROLE_ID}> 가 곧 옵니다.\n"
+            f"<a:loading:1500567324028043285> 개인정보 수집 동의 시 **동의**라고 입력해 주세요."
         )
 
+        # 3. 신청서 내용 임베드 전송
         form_embed = discord.Embed(
-            title="진행자 신청",
+            title="제출된 진행자 신청서",
             color=0x3498db
         )
         form_embed.add_field(
@@ -310,7 +292,7 @@ class ApplicationModal(discord.ui.Modal, title="진행자 신청서 작성"):
         )
         await ticket_channel.send(embed=form_embed)
 
-        # 3. 지정된 별도 관리자 채널(ID: 1540725362776871034)로 제어 패널 전송
+        # 4. 지정된 관리자 채널(ID: 1540725362776871034)에 관리자 제어 패널 전송
         admin_panel_channel = guild.get_channel(ADMIN_PANEL_CHANNEL_ID)
         if admin_panel_channel:
             admin_embed = discord.Embed(
@@ -318,7 +300,9 @@ class ApplicationModal(discord.ui.Modal, title="진행자 신청서 작성"):
                 description=(
                     f"**신청자**: {member.mention} ({member.id})\n"
                     f"**티켓 채널**: {ticket_channel.mention}\n\n"
-                    f"• **개인정보 인증 완료**: 입금 안내 및 승인/거절 버튼 전송\n"
+                    f"• **개인정보 인증 완료**: 입금 진행 중 안내 전송\n"
+                    f"• **입금 승인**: 최종 승인 전송 및 로그 기록\n"
+                    f"• **입금 거절**: 입금 거절 안내 전송 및 로그 기록\n"
                     f"• **신청 보류**: 보류 사유 전송 및 로그 기록\n"
                     f"• **신청 거절**: 거절 사유 전송 후 티켓 삭제 및 로그 기록\n"
                     f"• **티켓 닫기**: 해당 티켓 삭제 및 로그 기록"
@@ -330,7 +314,7 @@ class ApplicationModal(discord.ui.Modal, title="진행자 신청서 작성"):
                 view=AdminControlView(applicant=member, ticket_channel=ticket_channel)
             )
 
-        # 4. 신청 접수 로그 기록
+        # 5. 신청 접수 로그 기록
         log_embed = discord.Embed(
             title="📥 [신청서 접수 기록]",
             color=0x3498db
