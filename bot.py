@@ -102,9 +102,9 @@ class LicenseRegisterModal(discord.ui.Modal, title="🔑 라이센스 코드 등
                 color=PASTEL_PINK
             )
             dm_embed.add_field(name="🔑 등록한 코드", value=f"`{code}`", inline=False)
-            dm_embed.add_field(name="🛡️ 지급된 역할", value=f"<@&{LICENSE_ROLE_ID}>", inline=True)
+            dm_embed.add_field(name="지급된 역할", value=f"<@&{LICENSE_ROLE_ID}>", inline=True)
             dm_embed.add_field(
-                name="⏳ 만료 예정일",
+                name="만료 예정일",
                 value=f"<t:{int(expire_time.timestamp())}:F>\n(<t:{int(expire_time.timestamp())}:R>)",
                 inline=False
             )
@@ -561,12 +561,12 @@ async def on_message(message):
 @app_commands.checks.has_permissions(administrator=True)
 async def make_main(interaction: discord.Interaction):
     embed = discord.Embed(
-        title="<:link_thr:1499081032832385284> 디코 / 오픈채팅 진행자 신청 및 등록",
+        title="<:store:1540740445330739210> 디코 / 오픈채팅 진행자 신청 및 등록",
         description="""판매자 신청 및 라이센스 등록은 아래 버튼을 눌러주세요.
 
 • **진행자 신청**: 티켓 생성 후 안내 절차 진행
+
 • **라이센스 등록**: 발급받은 코드 입력 시 역할 지급 및 만료 시간 적용 (7일)
-• 판매 활동 중에는 서버 내 거래 규정을 반드시 준수
 -# <:emoji_109:1523981022826336406> 장난으로 생성한 경우 제재됩니다. <a:Warning_2:1490617932487594004>""",
         color=PASTEL_PINK  # 파스텔 연핑크 색상 적용
     )
