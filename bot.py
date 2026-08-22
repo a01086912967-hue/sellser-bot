@@ -246,23 +246,28 @@ class AdminControlView(discord.ui.View):
         else:
             await self.ticket_channel.send(embed=completed_embed)
 
-        # 3. 티켓 채널에 라이센스 코드 안내 임베드 및 복사용 단독 코드 전송
+        # 3. 원래 라이센스 코드 안내 임베드 그대로 유지하여 전송
         lic_embed = discord.Embed(
             title="🔑 7일 라이센스 코드가 발급되었습니다",
             description=f"{self.applicant.mention} 님, 아래 발급된 코드를 복사하여 사용해 주세요.",
             color=0x3498db
         )
         lic_embed.add_field(
+            name="발급된 라이센스 코드",
+            value=f"```\n{license_code}\n```",
+            inline=False
+        )
+        lic_embed.add_field(
             name="등록 안내",
-            value="메인 채널의 **`🔑 라이센스 등록`** 버튼을 누른 후 아래 코드를 입력하여 역할을 지급받으세요.",
+            value="메인 채널의 **`🔑 라이센스 등록`** 버튼을 누른 후 위 코드를 입력하여 역할을 지급받으세요.",
             inline=False
         )
         await self.ticket_channel.send(embed=lic_embed)
         
-        # 📌 복사하기 용이하도록 코드만 단독으로 텍스트 전송
+        # 4. 임베드 아래에 복사용 단독 코드 전송
         await self.ticket_channel.send(f"```\n{license_code}\n```")
 
-        # 4. 개인 DM 전송
+        # 5. 개인 DM 전송
         try:
             dm_embed = discord.Embed(
                 title="🎁 [7일 라이센스 코드 발급 완료]",
@@ -570,7 +575,7 @@ async def make_main(interaction: discord.Interaction):
 
 • **라이센스 등록**: 발급받은 코드 입력 시 역할 지급 및 만료 시간 적용 (7일)
 -# <:emoji_109:1523981022826336406> 장난으로 생성한 경우 제재됩니다. <a:Warning_2:1490617932487594004>""",
-        color=PASTEL_PINK  # 파스텔 연핑크 색상 적용
+        color=PASTEL_PINK
     )
     await interaction.channel.send(embed=embed, view=MainMenuView())
     await interaction.response.send_message("메인 메뉴 생성 완료!", ephemeral=True)
