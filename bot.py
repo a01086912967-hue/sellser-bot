@@ -111,7 +111,7 @@ class LicenseRegisterModal(discord.ui.Modal, title="🔑 라이센스 코드 등
             dm_embed.set_footer(text="만료 시간이 지나면 역할이 자동으로 회수됩니다.")
             await interaction.user.send(embed=dm_embed)
         except discord.Forbidden:
-            pass  # DM이 막혀 있는 경우 예외 처리
+            pass
 
         # 등록 로그 작성
         log_embed = discord.Embed(title="🔑 [라이센스 등록 기록]", color=0x2ecc71)
@@ -567,6 +567,7 @@ async def on_message(message):
 @bot.tree.command(name="메인메뉴생성", description="[관리자] 신청 및 라이센스 등록 메인 버튼 메시지를 생성합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def make_main(interaction: discord.Interaction):
+    # 이미지처럼 하단에 구분선을 넣어 버튼이 임베드 안에 자연스럽게 감싸지도록 연출
     embed = discord.Embed(
         title="<:store:1540740445330739210> 디코 / 오픈채팅 진행자 신청 및 등록",
         description="""판매자 신청 및 라이센스 등록은 아래 버튼을 눌러주세요.
@@ -574,7 +575,9 @@ async def make_main(interaction: discord.Interaction):
 • **진행자 신청**: 티켓 생성 후 안내 절차 진행
 
 • **라이센스 등록**: 발급받은 코드 입력 시 역할 지급 및 만료 시간 적용 (7일)
--# <:emoji_109:1523981022826336406> 장난으로 생성한 경우 제재됩니다. <a:Warning_2:1490617932487594004>""",
+-# <:emoji_109:1523981022826336406> 장난으로 생성한 경우 제재됩니다. <a:Warning_2:1490617932487594004>
+
+───────────────────────────""",
         color=PASTEL_PINK
     )
     await interaction.channel.send(embed=embed, view=MainMenuView())
