@@ -246,7 +246,7 @@ class AdminControlView(discord.ui.View):
         else:
             await self.ticket_channel.send(embed=completed_embed)
 
-        # 3. 원래 라이센스 코드 안내 임베드 그대로 유지하여 전송
+        # 3. 원래 안내 임베드 그대로 유지하여 전송
         lic_embed = discord.Embed(
             title="🔑 7일 라이센스 코드가 발급되었습니다",
             description=f"{self.applicant.mention} 님, 아래 발급된 코드를 복사하여 사용해 주세요.",
@@ -264,8 +264,8 @@ class AdminControlView(discord.ui.View):
         )
         await self.ticket_channel.send(embed=lic_embed)
         
-        # 4. 임베드 아래에 복사용 단독 코드 전송
-        await self.ticket_channel.send(f"```\n{license_code}\n```")
+        # 4. 임베드 아래에 순수 텍스트 형태로만 코드 전송
+        await self.ticket_channel.send(license_code)
 
         # 5. 개인 DM 전송
         try:
