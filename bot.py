@@ -353,7 +353,7 @@ class ConfirmApplyView(discord.ui.View):
         await interaction.response.send_message("신청이 취소되었습니다.", ephemeral=True)
 
 
-# [메인 메뉴 버튼 뷰]
+# [메인 메뉴 버튼 이벤트 처리용 View]
 class MainMenuView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -446,27 +446,65 @@ async def on_message(message):
     await bot.process_commands(message)
 
 
-# 🌟 [요청하신 이미지 레이아웃 100% 동일 구현]
+# 🌟 [Components V2 컨테이너 방식: 버튼이 상자 내부에 포함됨]
 @bot.tree.command(name="메인메뉴생성", description="[관리자] 진행자 신청 및 라이센스 등록 메인 메뉴를 생성합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def make_main(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="<:store:1540740445330739210> 디코 / 오픈채팅 진행자 신청 및 등록",
-        description=(
-            "• **진행자 신청**: 티켓 생성 후 안내 절차 진행\n"
-            "• **라이센스 등록**: 발급받은 코드 입력 시 역할 지급 및 만료 시간 적용 (7일)\n"
-            "-# <:emoji_109:1523981022826336406> 장난으로 생성한 경우 제재됩니다. <a:Warning_2:1490617932487594004>\n\n"
-            "───────────────────────────────\n"
-            "• 아래 버튼을 눌러 진행자 신청 및 라이센스 등록을 진행해 주세요."
-        ),
-        color=PASTEL_PINK
-    )
+    payload = {
+        "flags": 8192,  # IS_COMPONENTS_V2 플래그 (컨테이너 UI 활성화)
+        "components": [
+            {
+                "type": 17,  # Container (컨테이너 상자)
+                "accent_color": PASTEL_PINK,  # 핑크색 테두리
+                "components": [
+                    {
+                        "type": 10,  # TextDisplay
+                        "content": (
+                            "**<:store:1540740445330739210> 디코 / 오픈채팅 진행자 신청 및 등록**\n\n"
+                            "• **진행자 신청**: 티켓 생성 후 안내 절차 진행\n"
+                            "• **라이센스 등록**: 발급받은 코드 입력 시 역할 지급 및 만료 시간 적용 (7일)\n"
+                            "-# <:emoji_109:1523981022826336406> 장난으로 생성한 경우 제재됩니다. <a:Warning_2:1490617932487594004>\n\n"
+                            "아래 버튼을 눌러 진행자 신청 및 라이센스 등록을 진행해 주세요."
+                        )
+                    },
+                    {
+                        "type": 14,  # Separator (상자 내부 회색 구분선)
+                        "divider": True,
+                        "spacing": 1
+                    },
+                    {
+                        "type": 1,  # ActionRow (상자 내부에 배치되는 버튼들)
+                        "components": [
+                            {
+                                "type": 2,
+                                "style": 3,  # 초록색
+                                "label": "진행자 신청",
+                                "emoji": {"id": "1540740445330739210", "name": "store"},
+                                "custom_id": "main_apply"
+                            },
+                            {
+                                "type": 2,
+                                "style": 1,  # 파란색
+                                "label": "라이센스 등록",
+                                "emoji": {"name": "🔑"},
+                                "custom_id": "main_register_license"
+                            },
+                            {
+                                "type": 2,
+                                "style": 2,  # 회색
+                                "label": "진행자 설명",
+                                "emoji": {"name": "📖"},
+                                "custom_id": "main_info"
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
 
-    await interaction.channel.send(
-        embed=embed,
-        view=MainMenuView()
-    )
-    
+    # API 직접 호출을 통해 컨테이너형 메시지 전송
+    await interaction.client.http.send_message(interaction.channel_id, **payload)
     await interaction.response.send_message("메인 메뉴 생성 완료!", ephemeral=True)
 
 
