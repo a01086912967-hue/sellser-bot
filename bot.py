@@ -18,7 +18,6 @@ ADMIN_PANEL_CHANNEL_ID = 1540725362776871034  # 관리자 제어 패널 채널 I
 LICENSE_ROLE_ID = 1540733768275333270   # 라이센스 보유자 역할 ID
 IMAGE_FILE_NAME = "guide.png"           # 안내 이미지 파일명
 
-# 사진과 동일한 파스텔 연핑크 색상 코드
 PASTEL_PINK = 0xFFB6C1
 
 intents = discord.Intents.default()
@@ -27,11 +26,9 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# 메모리 데이터 저장용
 license_db = {}
 user_licenses = {}
 
-# 로그 전송 헬퍼 함수
 async def send_log(guild: discord.Guild, embed: discord.Embed):
     log_channel = guild.get_channel(LOG_CHANNEL_ID)
     if log_channel:
@@ -42,7 +39,6 @@ async def send_log(guild: discord.Guild, embed: discord.Embed):
 # 2. UI 컴포넌트 & 모달
 # ==========================================
 
-# [라이센스 코드 등록 모달]
 class LicenseRegisterModal(discord.ui.Modal, title="🔑 라이센스 코드 등록"):
     license_code = discord.ui.TextInput(
         label="발급받은 라이센스 코드를 입력하세요",
@@ -116,7 +112,6 @@ class LicenseRegisterModal(discord.ui.Modal, title="🔑 라이센스 코드 등
         await send_log(interaction.guild, log_embed)
 
 
-# [신청 거절 사유 입력 모달]
 class RejectReasonModal(discord.ui.Modal, title="신청 거절 사유 입력"):
     def __init__(self, applicant: discord.Member, ticket_channel: discord.TextChannel):
         super().__init__()
@@ -144,7 +139,6 @@ class RejectReasonModal(discord.ui.Modal, title="신청 거절 사유 입력"):
         await interaction.followup.send("거절 처리가 완료되었습니다.", ephemeral=True)
 
 
-# [신청 보류 사유 입력 모달]
 class HoldReasonModal(discord.ui.Modal, title="신청 보류 사유 입력"):
     def __init__(self, applicant: discord.Member, ticket_channel: discord.TextChannel):
         super().__init__()
@@ -171,7 +165,6 @@ class HoldReasonModal(discord.ui.Modal, title="신청 보류 사유 입력"):
         await interaction.followup.send("보류 처리가 완료되었습니다.", ephemeral=True)
 
 
-# [관리자 전용 제어 패널]
 class AdminControlView(discord.ui.View):
     def __init__(self, applicant: discord.Member, ticket_channel: discord.TextChannel):
         super().__init__(timeout=None)
@@ -290,7 +283,6 @@ class AdminControlView(discord.ui.View):
         await self.ticket_channel.delete()
 
 
-# [신청 양식 모달 창]
 class ApplicationModal(discord.ui.Modal, title="진행자 신청서 작성"):
     platform = discord.ui.TextInput(
         label="1. 진행자를 진행할 매체를 선택해 주세요.",
@@ -361,7 +353,7 @@ class ConfirmApplyView(discord.ui.View):
         await interaction.response.send_message("신청이 취소되었습니다.", ephemeral=True)
 
 
-# [메인 메뉴 버튼 뷰 (사진 속 디자인 스타일의 버튼 배치)]
+# [메인 메뉴 버튼 뷰]
 class MainMenuView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -454,40 +446,26 @@ async def on_message(message):
     await bot.process_commands(message)
 
 
-# 🌟 [사진 레이아웃 적용 완료된 메인 메뉴 생성 명령어]
 @bot.tree.command(name="메인메뉴생성", description="[관리자] 진행자 신청 및 라이센스 등록 메인 메뉴를 생성합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def make_main(interaction: discord.Interaction):
-    # 상단 박스 (안내 사항)
-    embed1 = discord.Embed(
+    embed = discord.Embed(
         title="<:store:1540740445330739210> 디코 / 오픈채팅 진행자 신청 및 등록",
         description=(
             "• **진행자 신청**: 티켓 생성 후 안내 절차 진행\n"
             "• **라이센스 등록**: 발급받은 코드 입력 시 역할 지급 및 만료 시간 적용 (7일)\n"
-            "-# <:emoji_109:1523981022826336406> 장난으로 생성한 경우 제재됩니다. <a:Warning_2:1490617932487594004>"
+            "-# <:emoji_109:1523981022826336406> 장난으로 생성한 경우 제재됩니다. <a:Warning_2:1490617932487594004>\n\n"
+            "───────────────────────────────\n"
+            "• 아래 버튼을 눌러 진행자 신청 및 라이센스 등록을 진행해 주세요."
         ),
         color=PASTEL_PINK
     )
 
-    # 하단 박스 (버튼이 바로 아래에 붙는 상자)
-    embed2 = discord.Embed(
-        title="🏠 진행자 신청 / 관리하기",
-        description=(
-            "• 아래 버튼을 눌러 진행자 신청 및 라이센스 등록을 진행해 주세요.\n\n"
-            "───────────────────────────"
-        ),
-        color=PASTEL_PINK
-    )
-
-    # 맨 아래 푸터 텍스트
-    footer_text = "│ Copyright 2026. **PAPADOG SHOP (파파독샵)**. All rights reserved."
-
-    # 2개의 임베드를 배열로 묶어 전송하여 사진과 동일한 일체감 있는 박스 + 하단 버튼 구조 완성
     await interaction.channel.send(
-        content=footer_text,
-        embeds=[embed1, embed2],
+        embed=embed,
         view=MainMenuView()
     )
+    
     await interaction.response.send_message("메인 메뉴 생성 완료!", ephemeral=True)
 
 
