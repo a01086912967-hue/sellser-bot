@@ -246,19 +246,21 @@ class AdminControlView(discord.ui.View):
         else:
             await self.ticket_channel.send(embed=completed_embed)
 
-        # 3. 티켓 채널에 라이센스 코드 임베드 안내
+        # 3. 티켓 채널에 라이센스 코드 안내 임베드 및 복사용 단독 코드 전송
         lic_embed = discord.Embed(
             title="🔑 7일 라이센스 코드가 발급되었습니다",
-            description=f"{self.applicant.mention} 님, 아래 발급된 코드를 확인해 주세요.",
+            description=f"{self.applicant.mention} 님, 아래 발급된 코드를 복사하여 사용해 주세요.",
             color=0x3498db
         )
-        lic_embed.add_field(name="라이센스 코드 (7일용)", value=f"```\n{license_code}\n```", inline=False)
         lic_embed.add_field(
             name="등록 안내",
-            value="메인 채널의 **`🔑 라이센스 등록`** 버튼을 누른 후 위 코드를 입력하여 역할을 지급받으세요.",
+            value="메인 채널의 **`🔑 라이센스 등록`** 버튼을 누른 후 아래 코드를 입력하여 역할을 지급받으세요.",
             inline=False
         )
         await self.ticket_channel.send(embed=lic_embed)
+        
+        # 📌 복사하기 용이하도록 코드만 단독으로 텍스트 전송
+        await self.ticket_channel.send(f"```\n{license_code}\n```")
 
         # 4. 개인 DM 전송
         try:
@@ -529,7 +531,7 @@ async def on_message(message):
                 "**Android :**\n"
                 "1 . 설정 앱을 실행합니다.\n"
                 "2 . 휴대전화 정보 또는 휴대전화 정보 → 상태 정보로 이동합니다.\n"
-                "     (기기에 따라 SIM 상태, 내 전화번호 메뉴일 수도 있습니다.)\n"
+                "    (기기에 따라 SIM 상태, 내 전화번호 메뉴일 수도 있습니다.)\n"
                 "3 . 전화번호가 보이는 화면을 준비합니다.\n"
                 "4 . 저와 대화 중인 채팅창이 함께 보이도록 화면을 녹화하여 제출해 주세요."
             ),
