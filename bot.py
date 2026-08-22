@@ -7,7 +7,6 @@ import os
 # ==========================================
 # 1. 설정 및 ID 상수
 # ==========================================
-# Railway 환경 변수(Variables)에서 토큰을 불러옵니다.
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 CATEGORY_ID = 1457078078294458390       # 티켓이 생성될 카테고리 ID
@@ -22,6 +21,87 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # ==========================================
 # 2. UI 컴포넌트
 # ==========================================
+
+# [신청 양식 모달 창 (나만 보이는 입력 팝업)]
+class ApplicationModal(discord.ui.Modal, title="진행자 신청서 작성"):
+    platform = discord.ui.TextInput(
+        label="1. 진행자를 진행할 매체를 선택해 주세요.",
+        placeholder="예: 디스코드, 오픈채팅, 둘 다 등",
+        style=discord.TextStyle.short,
+        required=True
+    )
+
+    reason = discord.ui.TextInput(
+        label="2. 진행자를 하고 싶은 사유를 작성해 주세요.",
+        placeholder="신청 사유 및 경험 등을 자유롭게 작성해 주세요.",
+        style=discord.TextStyle.paragraph,
+        required=True
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        guild = interaction.guild
+        member = interaction.user
+        category = guild.get_channel(CATEGORY_ID)
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            member: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        }
+
+        # 카테고리 내에 티켓 채널 생성
+        ticket_channel = await guild.create_text_channel(
+            name=f"ticket-{member.name}",
+            category=category,
+            overwrites=overwrites
+        )
+
+        # 제출된 신청 양식 임베드
+        form_embed = discord.Embed(
+            title="📋 진행자 신청 양식 제출 내용",
+            color=0x3498db
+        )
+        form_embed.add_field(name="👤 신청자", value=member.mention, inline=False)
+        form_embed.add_field(name="📍 진행 매체", value=self.platform.value, inline=False)
+        form_embed.add_field(name="📝 신청 사유", value=self.reason.value, inline=False)
+
+        # 관리자 제어 패널 임베드
+        admin_embed = discord.Embed(
+            title="🛠️ 관리자 제어 패널",
+            description=(
+                f"**신청자**: {member.mention}\n\n"
+                f"신청자가 '동의' 입력 후 개인정보를 제출하면 아래 버튼으로 진행해 주세요.\n"
+                f"• **개인정보 인증 완료**: 입금 계좌 안내 전송\n"
+                f"• **입금 확인 완료**: 입금 완료 안내 전송\n"
+                f"• **티켓 닫기**: 해당 신청 채널 티켓 삭제"
+            ),
+            color=0x34495e
+        )
+
+        # 티켓 채널로 메시지 전송
+        await ticket_channel.send(embed=form_embed)
+        await ticket_channel.send(embed=admin_embed, view=AdminControlView(applicant=member))
+
+        # 사용자에게 안내 메시지 전달
+        await interaction.followup.send(f"티켓이 생성되었습니다: {ticket_channel.mention}", ephemeral=True)
+
+
+# [신청 여부 확인 버튼 (예 / 아니오)]
+class ConfirmApplyView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+
+    @discord.ui.button(label="예", style=discord.ButtonStyle.success, custom_id="btn_confirm_yes")
+    async def confirm_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # 예 선택 시 신청 양식 모달을 띄움
+        await interaction.response.send_modal(ApplicationModal())
+
+    @discord.ui.button(label="아니오", style=discord.ButtonStyle.danger, custom_id="btn_confirm_no")
+    async def confirm_no(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("신청이 취소되었습니다.", ephemeral=True)
+
 
 # [티켓 내 관리자 전용 제어 패널]
 class AdminControlView(discord.ui.View):
@@ -75,6 +155,7 @@ class AdminControlView(discord.ui.View):
         await asyncio.sleep(5)
         await interaction.channel.delete()
 
+
 # [메인 메뉴 고정 버튼]
 class MainMenuView(discord.ui.View):
     def __init__(self):
@@ -82,38 +163,12 @@ class MainMenuView(discord.ui.View):
 
     @discord.ui.button(label="🎫 진행자 신청", style=discord.ButtonStyle.primary, custom_id="main_apply")
     async def apply(self, interaction: discord.Interaction, button: discord.ui.Button):
-        guild = interaction.guild
-        member = interaction.user
-        
-        # 지정된 카테고리 가져오기
-        category = guild.get_channel(CATEGORY_ID)
-        
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(read_messages=False),
-            member: discord.PermissionOverwrite(read_messages=True, send_messages=True),
-            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
-        }
-
-        # 카테고리 내부 채널로 생성
-        ticket_channel = await guild.create_text_channel(
-            name=f"ticket-{member.name}",
-            category=category,
-            overwrites=overwrites
+        # 신청 버튼 누를 시 본인에게만 보이는 질문 메시지 전송
+        await interaction.response.send_message(
+            "❓ **진행자를 신청하시겠습니까?**",
+            view=ConfirmApplyView(),
+            ephemeral=True
         )
-        
-        admin_embed = discord.Embed(
-            title="🛠️ 관리자 제어 패널",
-            description=(
-                f"**신청자**: {member.mention}\n\n"
-                f"신청자가 '동의' 입력 후 개인정보를 제출하면 아래 버튼으로 진행해 주세요.\n"
-                f"• **개인정보 인증 완료**: 입금 계좌 안내 전송\n"
-                f"• **입금 확인 완료**: 입금 완료 안내 전송\n"
-                f"• **티켓 닫기**: 해당 신청 채널 티켓 삭제"
-            ),
-            color=0x34495e
-        )
-        await ticket_channel.send(embed=admin_embed, view=AdminControlView(applicant=member))
-        await interaction.response.send_message(f"티켓이 생성되었습니다: {ticket_channel.mention}", ephemeral=True)
 
     @discord.ui.button(label="📖 진행자 설명", style=discord.ButtonStyle.secondary, custom_id="main_info")
     async def info(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -126,6 +181,7 @@ class MainMenuView(discord.ui.View):
             color=0x3498db
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 # ==========================================
 # 3. 이벤트
@@ -195,6 +251,7 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
+
 # 메인 메뉴 생성 슬래시 명령어
 @bot.tree.command(name="메인메뉴생성", description="[관리자] 신청 메인 버튼 메시지를 생성합니다.")
 @app_commands.checks.has_permissions(administrator=True)
@@ -212,11 +269,13 @@ async def make_main(interaction: discord.Interaction):
     await interaction.channel.send(embed=embed, view=MainMenuView())
     await interaction.response.send_message("메인 메뉴 생성 완료!", ephemeral=True)
 
+
 @bot.event
 async def on_ready():
     print(f"로그인 성공: {bot.user.name}")
     bot.add_view(MainMenuView())
     await bot.tree.sync()
+
 
 if TOKEN:
     bot.run(TOKEN)
