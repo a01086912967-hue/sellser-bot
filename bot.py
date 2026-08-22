@@ -446,6 +446,7 @@ async def on_message(message):
     await bot.process_commands(message)
 
 
+# 🌟 [요청하신 이미지 레이아웃 100% 동일 구현]
 @bot.tree.command(name="메인메뉴생성", description="[관리자] 진행자 신청 및 라이센스 등록 메인 메뉴를 생성합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def make_main(interaction: discord.Interaction):
