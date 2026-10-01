@@ -6,7 +6,7 @@ import uuid
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-from openai import AsyncOpenAI  # OpenAI 라이브러리
+from openai import AsyncOpenAI
 
 # ==========================================
 # 1. 설정 및 ID 상수
@@ -14,7 +14,6 @@ from openai import AsyncOpenAI  # OpenAI 라이브러리
 TOKEN = os.getenv("DISCORD_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# OpenAI 비동기 클라이언트 초기화
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 CATEGORY_ID = 1457078078294458390  # 티켓 카테고리 ID
@@ -24,7 +23,7 @@ ADMIN_PANEL_CHANNEL_ID = 1540725362776871034  # 관리자 제어 패널 채널 I
 LICENSE_ROLE_ID = 1540733768275333270  # 라이센스 보유자 역할 ID
 IMAGE_FILE_NAME = "guide.png"  # 안내 이미지
 
-PASTEL_PINK = 0xFFB6C1  # 파스텔 연핑크 색상 코드
+PASTEL_PINK = 0xFFB6C1
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -32,12 +31,10 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# 메모리 데이터 저장용
 license_db = {}
 user_licenses = {}
 user_ticket_state = {}
 
-# 모집 가능 상태 (기본값: False)
 is_recruiting = False
 
 
@@ -637,106 +634,63 @@ class ConfirmApplyView(discord.ui.View):
     )
 
 
-class MainMenuView(discord.ui.View):
-
-  def __init__(self):
-    super().__init__(timeout=None)
-
-  @discord.ui.button(
-      label="진행자 신청",
-      style=discord.ButtonStyle.primary,
-      custom_id="main_apply",
-  )
-  async def apply(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    if not is_recruiting:
-      await interaction.response.send_message(
-          "❌ 현재 진행자 모집 기간이 아닙니다.", ephemeral=True
-      )
-      return
-
-    await interaction.response.send_message(
-        "**진행자를 신청하시겠습니까?**",
-        view=ConfirmApplyView(),
-        ephemeral=True,
-    )
-
-  @discord.ui.button(
-      label="라이센스 등록",
-      style=discord.ButtonStyle.success,
-      custom_id="main_register_license",
-  )
-  async def register_license(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    await interaction.response.send_modal(LicenseRegisterModal())
-
-  @discord.ui.button(
-      label="진행자 설명",
-      style=discord.ButtonStyle.secondary,
-      custom_id="main_info",
-  )
-  async def info(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    embed = discord.Embed(
-        title="📖 진행자 안내",
-        description="""**디코 / 옾챗 내에서 구매자에게 판매하는 역할입니다.**
-**구매 문의부터 거래 진행, 상품 지급까지 전부 담당해야 됩니다**
-일주일 ▶ 14,000원
--# 최대 14일만 신청됩니다.""",
-        color=PASTEL_PINK,
-    )
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-# Components V2 전용 뷰 (오류 수정됨)
+# ==========================================
+# Components V2 올바른 디자인 레이아웃 (수정됨)
+# ==========================================
 class MainMenuViewV2(discord.ui.LayoutView):
 
   def __init__(self):
     super().__init__(timeout=None)
 
+    # 1. 메인 컨테이너 생성
     container = discord.ui.Container()
-    container.add_item(
-        discord.ui.TextDisplay(
-            "# 📋 디코 / 오픈채팅 진행자 신청 및 등록\n\n판매자 신청 및 라이센스"
-            " 등록은 아래 버튼을 눌러주세요.\n\n• **진행자 신청**: 티켓"
-            " 생성 후 안내 절차 진행\n• **라이센스 등록**: 발급받은 코드 입력"
-            " 시 역할 지급 및 만료 시간 적용 (7일)\n\n-# 장난으로 생성한 경우"
-            " 제재됩니다."
-        )
+
+    # 2. 메인 안내 텍스트
+    text_display = discord.ui.TextDisplay(
+        "# 📋 디코 / 오픈채팅 진행자 신청 및 등록\n\n"
+        "판매자 신청 및 라이센스 등록은 아래 버튼을 눌러주세요.\n\n"
+        "• **진행자 신청**: 티켓 생성 후 안내 절차 진행\n"
+        "• **라이센스 등록**: 발급받은 코드 입력 시 역할 지급 및 만료 시간 적용"
+        " (7일)\n\n"
+        "-# 장난으로 생성한 경우 제재됩니다."
     )
+    container.add_item(text_display)
+
+    # 3. 구분선 추가
     container.add_item(discord.ui.Separator())
 
-    apply_button = discord.ui.Button(
+    # 4. 버튼들을 담을 액션 로우(ActionRow) 생성
+    action_row = discord.ui.ActionRow()
+
+    # 버튼 1: 진행자 신청
+    apply_btn = discord.ui.Button(
         label="진행자 신청",
         style=discord.ButtonStyle.primary,
         custom_id="main_apply_v2",
     )
-    apply_button.callback = self.apply_callback
+    apply_btn.callback = self.apply_callback
+    action_row.add_item(apply_btn)
 
-    # Section 생성 시 필수 요구 인자인 accessory 지정
-    section = discord.ui.Section(accessory=apply_button)
-
-    register_button = discord.ui.Button(
+    # 버튼 2: 라이센스 등록
+    register_btn = discord.ui.Button(
         label="라이센스 등록",
         style=discord.ButtonStyle.success,
         custom_id="main_register_license_v2",
     )
-    register_button.callback = self.register_license_callback
+    register_btn.callback = self.register_license_callback
+    action_row.add_item(register_btn)
 
-    info_button = discord.ui.Button(
+    # 버튼 3: 진행자 설명
+    info_btn = discord.ui.Button(
         label="진행자 설명",
         style=discord.ButtonStyle.secondary,
         custom_id="main_info_v2",
     )
-    info_button.callback = self.info_callback
+    info_btn.callback = self.info_callback
+    action_row.add_item(info_btn)
 
-    section.add_item(register_button)
-    section.add_item(info_button)
-
-    container.add_item(section)
+    # 컨테이너에 버튼 로우 추가 후 View에 적용
+    container.add_item(action_row)
     self.add_item(container)
 
   async def apply_callback(self, interaction: discord.Interaction):
@@ -828,9 +782,6 @@ async def on_message(message):
   if message.author.bot:
     return
 
-  # ------------------------------------------
-  # [서버 규칙 안내 적용] ChatGPT AI 질문 응답 ("토비야 ...")
-  # ------------------------------------------
   if message.content.startswith("토비야"):
     user_prompt = message.content[3:].strip()
 
@@ -885,12 +836,8 @@ async def on_message(message):
         await message.reply(f"❌ 답변 생성 중 오류가 발생했습니다: {e}")
     return
 
-  # ------------------------------------------
-  # 기존 티켓/인증 절차 핸들러
-  # ------------------------------------------
   state = user_ticket_state.get(message.channel.id)
 
-  # 1. "동의" 입력 시 안내문 출력
   if message.content.strip() == "동의" and state and not state["agreed"]:
     state["agreed"] = True
     embed = discord.Embed(
@@ -949,7 +896,6 @@ async def on_message(message):
     await bot.process_commands(message)
     return
 
-  # 2. 동의 후 정보 제출 (반드시 봇이 멘션되어 있어야 인식하여 저장)
   if state and state["agreed"] and not state["awaiting_deposit_confirm"]:
     if bot.user in message.mentions:
       files_to_send = []
@@ -991,7 +937,6 @@ async def on_message(message):
     await bot.process_commands(message)
     return
 
-  # 3. 유저가 "예"라고 입력 시 자동으로 입금 안내 메시지 출력
   if (
       message.content.strip() == "예"
       and state
@@ -1051,23 +996,8 @@ async def stop_recruitment(interaction: discord.Interaction):
 )
 @app_commands.checks.has_permissions(administrator=True)
 async def make_main(interaction: discord.Interaction):
-  try:
-    view_v2 = MainMenuViewV2()
-    await interaction.channel.send(view=view_v2)
-  except Exception as e:
-    # 혹시 모를 에러 발생 시 fallback 예외 처리
-    embed = discord.Embed(
-        title="디코 / 오픈채팅 진행자 신청 및 등록",
-        description="""판매자 신청 및 라이센스 등록은 아래 버튼을 눌러주세요.
-
-• **진행자 신청**: 티켓 생성 후 안내 절차 진행
-
-• **라이센스 등록**: 발급받은 코드 입력 시 역할 지급 및 만료 시간 적용 (7일)
--# 장난으로 생성한 경우 제재됩니다.""",
-        color=PASTEL_PINK,
-    )
-    await interaction.channel.send(embed=embed, view=MainMenuView())
-
+  view_v2 = MainMenuViewV2()
+  await interaction.channel.send(view=view_v2)
   await interaction.response.send_message(
       "메인 메뉴 생성 완료!", ephemeral=True
   )
@@ -1107,7 +1037,6 @@ async def send_message_as_bot(
 @bot.event
 async def on_ready():
   print(f"로그인 성공: {bot.user.name}")
-  bot.add_view(MainMenuView())
   try:
     bot.add_view(MainMenuViewV2())
   except Exception:
