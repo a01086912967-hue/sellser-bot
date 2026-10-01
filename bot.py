@@ -647,7 +647,7 @@ class MainMenuViewV2(discord.ui.LayoutView):
 
     # 2. 메인 안내 텍스트
     text_display = discord.ui.TextDisplay(
-        "# 📋 디코 / 오픈채팅 진행자 신청 및 등록\n\n"
+        "## 디코 / 오픈채팅 진행자 신청 및 등록\n\n"
         "판매자 신청 및 라이센스 등록은 아래 버튼을 눌러주세요.\n\n"
         "• **진행자 신청**: 티켓 생성 후 안내 절차 진행\n"
         "• **라이센스 등록**: 발급받은 코드 입력 시 역할 지급 및 만료 시간 적용"
