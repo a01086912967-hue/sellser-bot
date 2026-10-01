@@ -6,7 +6,7 @@ import uuid
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-from openai import AsyncOpenAI  # OpenAI 라이브러리 추가
+from openai import AsyncOpenAI  # OpenAI 라이브러리
 
 # ==========================================
 # 1. 설정 및 ID 상수
@@ -642,10 +642,6 @@ class MainMenuView(discord.ui.View):
   def __init__(self):
     super().__init__(timeout=None)
 
-    # Components V2 레이아웃 구성
-    # discord.py v2.6+ 기준 Layout Container 적용 구조 예시입니다.
-    # 기존 레이아웃 호환성을 유지하면서 최신 컴포넌트 객체를 포함합니다.
-
   @discord.ui.button(
       label="진행자 신청",
       style=discord.ButtonStyle.primary,
@@ -695,7 +691,7 @@ class MainMenuView(discord.ui.View):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-# Components V2를 구현하는 전용 뷰 생성
+# Components V2 전용 뷰 (오류 수정됨)
 class MainMenuViewV2(discord.ui.LayoutView):
 
   def __init__(self):
@@ -713,14 +709,15 @@ class MainMenuViewV2(discord.ui.LayoutView):
     )
     container.add_item(discord.ui.Separator())
 
-    section = discord.ui.Section()
-
     apply_button = discord.ui.Button(
         label="진행자 신청",
         style=discord.ButtonStyle.primary,
         custom_id="main_apply_v2",
     )
     apply_button.callback = self.apply_callback
+
+    # Section 생성 시 필수 요구 인자인 accessory 지정
+    section = discord.ui.Section(accessory=apply_button)
 
     register_button = discord.ui.Button(
         label="라이센스 등록",
@@ -736,7 +733,6 @@ class MainMenuViewV2(discord.ui.LayoutView):
     )
     info_button.callback = self.info_callback
 
-    section.add_item(apply_button)
     section.add_item(register_button)
     section.add_item(info_button)
 
@@ -836,7 +832,7 @@ async def on_message(message):
   # [서버 규칙 안내 적용] ChatGPT AI 질문 응답 ("토비야 ...")
   # ------------------------------------------
   if message.content.startswith("토비야"):
-    user_prompt = message.content[3:].strip()  # "토비야" 이후의 질문 내용만 추출
+    user_prompt = message.content[3:].strip()
 
     if not user_prompt:
       await message.reply(
@@ -852,7 +848,6 @@ async def on_message(message):
 
     async with message.channel.typing():
       try:
-        # 서버 전용 규칙 및 짧은 답변 지침 추가
         system_instruction = (
             "너는 이 디스코드 서버의 AI 마스코트 '토비'야.\n"
             "반드시 군더더기 없이 짧고 핵심 위주로 한국어로 답변해.\n\n"
@@ -876,7 +871,6 @@ async def on_message(message):
             "   - 기타 항목은 서버 '이용안내' 스레드 참고"
         )
 
-        # ChatGPT API 호출 (gpt-4o-mini 사용)
         response = await openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -1058,11 +1052,10 @@ async def stop_recruitment(interaction: discord.Interaction):
 @app_commands.checks.has_permissions(administrator=True)
 async def make_main(interaction: discord.Interaction):
   try:
-    # Components V2 인터페이스 사용 시도
     view_v2 = MainMenuViewV2()
     await interaction.channel.send(view=view_v2)
-  except AttributeError:
-    # 사용 중인 discord.py 버전에 LayoutView 등 V2 요소가 미지원 시 폴백 (기존 Embed/View)
+  except Exception as e:
+    # 혹시 모를 에러 발생 시 fallback 예외 처리
     embed = discord.Embed(
         title="디코 / 오픈채팅 진행자 신청 및 등록",
         description="""판매자 신청 및 라이센스 등록은 아래 버튼을 눌러주세요.
