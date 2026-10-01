@@ -30,8 +30,10 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # 메모리 데이터 저장용
 license_db = {}
 user_licenses = {}
-# 유저별 상태 추적 (동의 여부 및 입금 대기 상태)
 user_ticket_state = {}
+
+# 모집 가능 상태 전역 변수 (기본값: False - 모집 닫힘)
+is_recruiting = False
 
 # 로그 전송 헬퍼 함수
 async def send_log(guild: discord.Guild, embed: discord.Embed, files: list = None):
@@ -209,7 +211,6 @@ class AdminControlView(discord.ui.View):
             await interaction.response.send_message("❌ 관리자만 클릭할 수 있습니다.", ephemeral=True)
             return
 
-        # 1. 7일 권한 라이센스 코드 생성
         license_code = f"KEY-{uuid.uuid4().hex[:12].upper()}"
         license_db[license_code] = {
             "days": 7,
@@ -218,7 +219,6 @@ class AdminControlView(discord.ui.View):
             "expires_at": None
         }
 
-        # 2. 입금 완료 임베드 전송
         completed_embed = discord.Embed(
             title="입금이 완료되었습니다",
             description=f"{self.applicant.mention} 님의 입금이 확인되어 **진행자 신청이 승인**되었습니다!",
@@ -226,7 +226,6 @@ class AdminControlView(discord.ui.View):
         )
         await self.ticket_channel.send(embed=completed_embed)
 
-        # 3. 라이센스 안내 임베드
         lic_embed = discord.Embed(
             title="7일 라이센스 코드가 발급되었습니다",
             description=f"{self.applicant.mention} 님, 아래 발급된 코드를 복사하여 사용해 주세요.",
@@ -243,11 +242,8 @@ class AdminControlView(discord.ui.View):
             inline=False
         )
         await self.ticket_channel.send(embed=lic_embed)
-        
-        # 4. 순수 텍스트 형태로 코드 전송
         await self.ticket_channel.send(license_code)
 
-        # 5. 개인 DM 전송
         try:
             dm_embed = discord.Embed(
                 title="[7일 라이센스 코드 발급 완료]",
@@ -356,7 +352,6 @@ class ApplicationModal(discord.ui.Modal, title="진행자 신청서 작성"):
             overwrites=overwrites
         )
 
-        # 상태 초기화
         user_ticket_state[ticket_channel.id] = {
             "user_id": member.id,
             "agreed": False,
@@ -409,6 +404,10 @@ class ConfirmApplyView(discord.ui.View):
 
     @discord.ui.button(label="예", style=discord.ButtonStyle.success, custom_id="btn_confirm_yes")
     async def confirm_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # 2차 확인 단계에서도 모집 상태 확인
+        if not is_recruiting:
+            await interaction.response.send_message("❌ 현재 진행자 모집 기간이 아닙니다.", ephemeral=True)
+            return
         await interaction.response.send_modal(ApplicationModal())
 
     @discord.ui.button(label="아니오", style=discord.ButtonStyle.danger, custom_id="btn_confirm_no")
@@ -423,6 +422,11 @@ class MainMenuView(discord.ui.View):
 
     @discord.ui.button(label="진행자 신청", style=discord.ButtonStyle.primary, custom_id="main_apply")
     async def apply(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # 모집 활성화 여부 확인
+        if not is_recruiting:
+            await interaction.response.send_message("❌ 현재 진행자 모집 기간이 아닙니다.", ephemeral=True)
+            return
+
         await interaction.response.send_message(
             "**진행자를 신청하시겠습니까?**",
             view=ConfirmApplyView(),
@@ -557,7 +561,6 @@ async def on_message(message):
 
     # 2. 동의 후 정보 제출 (반드시 봇이 멘션되어 있어야 인식하여 저장)
     if state and state["agreed"] and not state["awaiting_deposit_confirm"]:
-        # 봇이 멘션되었는지 확인
         if bot.user in message.mentions:
             files_to_send = []
             if message.attachments:
@@ -565,7 +568,6 @@ async def on_message(message):
                     file_data = await attachment.to_file()
                     files_to_send.append(file_data)
 
-            # 멘션 문자열 제거한 텍스트 가공
             cleaned_content = message.content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip()
 
             if cleaned_content or files_to_send:
@@ -578,10 +580,8 @@ async def on_message(message):
                 if cleaned_content:
                     log_embed.add_field(name="제출 내용", value=cleaned_content, inline=False)
 
-                # 지정된 채널(1540722623883911250)로 저장
                 await send_log(message.guild, log_embed, files=files_to_send)
 
-                # 제출 완료 및 입금 진행 질문 메시지 전송
                 state["awaiting_deposit_confirm"] = True
                 await message.channel.send(
                     f"{message.author.mention} 님, 제출해 주신 개인정보 및 인증 서류 저장이 완료되었습니다.\n\n"
@@ -593,7 +593,7 @@ async def on_message(message):
 
     # 3. 유저가 "예"라고 입력 시 자동으로 입금 안내 메시지 출력
     if message.content.strip() == "예" and state and state["awaiting_deposit_confirm"]:
-        state["awaiting_deposit_confirm"] = False  # 처리 완료
+        state["awaiting_deposit_confirm"] = False
 
         embed = discord.Embed(
             title="입금 진행 중...",
@@ -608,6 +608,26 @@ async def on_message(message):
         await message.channel.send(embed=embed)
 
     await bot.process_commands(message)
+
+
+# ==========================================
+# 5. 슬래시 명령어 (관리자 및 제어)
+# ==========================================
+
+@bot.tree.command(name="모집시작", description="[관리자] 진행자 신청 모집을 시작합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def start_recruitment(interaction: discord.Interaction):
+    global is_recruiting
+    is_recruiting = True
+    await interaction.response.send_message("✅ 진행자 신청 모집이 **시작되었습니다**. (티켓 생성 가능)", ephemeral=True)
+
+
+@bot.tree.command(name="모집종료", description="[관리자] 진행자 신청 모집을 종료합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def stop_recruitment(interaction: discord.Interaction):
+    global is_recruiting
+    is_recruiting = False
+    await interaction.response.send_message("⛔ 진행자 신청 모집이 **종료되었습니다**. (티켓 생성 차단)", ephemeral=True)
 
 
 @bot.tree.command(name="메인메뉴생성", description="[관리자] 신청 및 라이센스 등록 메인 버튼 메시지를 생성합니다.")
