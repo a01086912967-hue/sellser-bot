@@ -5,11 +5,16 @@ import asyncio
 import os
 import uuid
 from datetime import datetime, timedelta
+from openai import AsyncOpenAI  # OpenAI 라이브러리 추가
 
 # ==========================================
 # 1. 설정 및 ID 상수
 # ==========================================
 TOKEN = os.getenv("DISCORD_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# OpenAI 비동기 클라이언트 초기화
+openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 CATEGORY_ID = 1457078078294458390        # 티켓 카테고리 ID
 ADMIN_ROLE_ID = 1458178323434836199      # 관리자 역할 ID
@@ -18,7 +23,6 @@ ADMIN_PANEL_CHANNEL_ID = 1540725362776871034  # 관리자 제어 패널 채널 I
 LICENSE_ROLE_ID = 1540733768275333270    # 라이센스 보유자 역할 ID
 IMAGE_FILE_NAME = "guide.png"            # 안내 이미지
 
-# 색상 상수
 PASTEL_PINK = 0xFFB6C1                  # 파스텔 연핑크 색상 코드
 
 intents = discord.Intents.default()
@@ -32,10 +36,9 @@ license_db = {}
 user_licenses = {}
 user_ticket_state = {}
 
-# 모집 가능 상태 전역 변수 (기본값: False - 모집 닫힘)
+# 모집 가능 상태 (기본값: False)
 is_recruiting = False
 
-# 로그 전송 헬퍼 함수
 async def send_log(guild: discord.Guild, embed: discord.Embed, files: list = None):
     log_channel = guild.get_channel(LOG_CHANNEL_ID)
     if log_channel:
@@ -49,7 +52,6 @@ async def send_log(guild: discord.Guild, embed: discord.Embed, files: list = Non
 # 2. UI 컴포넌트 & 모달
 # ==========================================
 
-# [라이센스 코드 등록 모달]
 class LicenseRegisterModal(discord.ui.Modal, title="라이센스 코드 등록"):
     license_code = discord.ui.TextInput(
         label="발급받은 라이센스 코드를 입력하세요",
@@ -71,7 +73,6 @@ class LicenseRegisterModal(discord.ui.Modal, title="라이센스 코드 등록")
             await interaction.followup.send("❌ 이미 사용된 라이센스 코드입니다.", ephemeral=True)
             return
 
-        # 라이센스 등록 처리 (7일 차감 시작)
         days = lic_info["days"]
         expire_time = datetime.now() + timedelta(days=days)
         lic_info["used"] = True
@@ -84,12 +85,10 @@ class LicenseRegisterModal(discord.ui.Modal, title="라이센스 코드 등록")
             "expires_at": expire_time
         }
 
-        # 역할 부여
         role = interaction.guild.get_role(LICENSE_ROLE_ID)
         if role:
             await interaction.user.add_roles(role)
 
-        # 상호작용 채널에 완료 임베드 출력
         embed = discord.Embed(
             title="라이센스 등록 완료",
             description=f"{interaction.user.mention} 님의 라이센스가 성공적으로 등록되었습니다!",
@@ -101,7 +100,6 @@ class LicenseRegisterModal(discord.ui.Modal, title="라이센스 코드 등록")
 
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-        # 사용자 개인 DM 알림 전송
         try:
             dm_embed = discord.Embed(
                 title="[라이센스 등록 및 역할 지급 완료]",
@@ -120,7 +118,6 @@ class LicenseRegisterModal(discord.ui.Modal, title="라이센스 코드 등록")
         except discord.Forbidden:
             pass
 
-        # 등록 로그 작성
         log_embed = discord.Embed(title="[라이센스 등록 기록]", color=0x2ecc71)
         log_embed.add_field(name="사용자", value=f"{interaction.user.mention} ({interaction.user.id})", inline=True)
         log_embed.add_field(name="코드", value=f"`{code}`", inline=True)
@@ -128,7 +125,6 @@ class LicenseRegisterModal(discord.ui.Modal, title="라이센스 코드 등록")
         await send_log(interaction.guild, log_embed)
 
 
-# [신청 거절 사유 입력 모달]
 class RejectReasonModal(discord.ui.Modal, title="신청 거절 사유 입력"):
     def __init__(self, applicant: discord.Member, ticket_channel: discord.TextChannel):
         super().__init__()
@@ -163,7 +159,6 @@ class RejectReasonModal(discord.ui.Modal, title="신청 거절 사유 입력"):
         await send_log(interaction.guild, log_embed)
 
 
-# [신청 보류 사유 입력 모달]
 class HoldReasonModal(discord.ui.Modal, title="신청 보류 사유 입력"):
     def __init__(self, applicant: discord.Member, ticket_channel: discord.TextChannel):
         super().__init__()
@@ -198,7 +193,6 @@ class HoldReasonModal(discord.ui.Modal, title="신청 보류 사유 입력"):
         await send_log(interaction.guild, log_embed)
 
 
-# [관리자 전용 제어 패널]
 class AdminControlView(discord.ui.View):
     def __init__(self, applicant: discord.Member, ticket_channel: discord.TextChannel):
         super().__init__(timeout=None)
@@ -317,7 +311,6 @@ class AdminControlView(discord.ui.View):
         await self.ticket_channel.delete()
 
 
-# [신청 양식 모달 창]
 class ApplicationModal(discord.ui.Modal, title="진행자 신청서 작성"):
     platform = discord.ui.TextInput(
         label="1. 진행자를 진행할 매체를 선택해 주세요.",
@@ -404,7 +397,6 @@ class ConfirmApplyView(discord.ui.View):
 
     @discord.ui.button(label="예", style=discord.ButtonStyle.success, custom_id="btn_confirm_yes")
     async def confirm_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # 2차 확인 단계에서도 모집 상태 확인
         if not is_recruiting:
             await interaction.response.send_message("❌ 현재 진행자 모집 기간이 아닙니다.", ephemeral=True)
             return
@@ -415,14 +407,12 @@ class ConfirmApplyView(discord.ui.View):
         await interaction.response.send_message("신청이 취소되었습니다.", ephemeral=True)
 
 
-# [메인 메뉴 고정 버튼]
 class MainMenuView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
     @discord.ui.button(label="진행자 신청", style=discord.ButtonStyle.primary, custom_id="main_apply")
     async def apply(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # 모집 활성화 여부 확인
         if not is_recruiting:
             await interaction.response.send_message("❌ 현재 진행자 모집 기간이 아닙니다.", ephemeral=True)
             return
@@ -498,6 +488,46 @@ async def on_message(message):
     if message.author.bot:
         return
 
+    # ------------------------------------------
+    # [추가된 기능] ChatGPT AI 질문 응답 ("토비야 ...")
+    # ------------------------------------------
+    if message.content.startswith("토비야"):
+        user_prompt = message.content[3:].strip() # "토비야" 이후의 질문 내용만 추출
+        
+        if not user_prompt:
+            await message.reply("네! 궁금한 점이 있으신가요? 예: `토비야 로벅스 어디서 구매해?`")
+            return
+
+        if not openai_client:
+            await message.reply("❌ OpenAI API 키가 설정되지 않아 답변할 수 없습니다.")
+            return
+
+        async with message.channel.typing():
+            try:
+                # ChatGPT API 호출 (gpt-4o-mini 사용)
+                response = await openai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {
+                            "role": "system", 
+                            "content": (
+                                "너는 디스코드 서버의 친절하고 친근한 AI 마스코트 '토비'야. "
+                                "사용자의 질문에 한국어로 명확하고 유용하게 답해줘."
+                            )
+                        },
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    max_tokens=800
+                )
+                ai_reply = response.choices[0].message.content
+                await message.reply(ai_reply)
+            except Exception as e:
+                await message.reply(f"❌ 답변 생성 중 오류가 발생했습니다: {e}")
+        return
+
+    # ------------------------------------------
+    # 기존 티켓/인증 절차 핸들러
+    # ------------------------------------------
     state = user_ticket_state.get(message.channel.id)
 
     # 1. "동의" 입력 시 안내문 출력
@@ -611,7 +641,7 @@ async def on_message(message):
 
 
 # ==========================================
-# 5. 슬래시 명령어 (관리자 및 제어)
+# 5. 슬래시 명령어
 # ==========================================
 
 @bot.tree.command(name="모집시작", description="[관리자] 진행자 신청 모집을 시작합니다.")
