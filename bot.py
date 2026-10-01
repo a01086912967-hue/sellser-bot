@@ -1,10 +1,11 @@
+import os
+import uuid
+import asyncio
+from datetime import datetime, timedelta
+
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-import asyncio
-import os
-import uuid
-from datetime import datetime, timedelta
 from openai import AsyncOpenAI  # OpenAI 라이브러리 추가
 
 # ==========================================
@@ -39,405 +40,655 @@ user_ticket_state = {}
 # 모집 가능 상태 (기본값: False)
 is_recruiting = False
 
-async def send_log(guild: discord.Guild, embed: discord.Embed, files: list = None):
-    log_channel = guild.get_channel(LOG_CHANNEL_ID)
-    if log_channel:
-        if files:
-            await log_channel.send(embed=embed, files=files)
-        else:
-            await log_channel.send(embed=embed)
+
+async def send_log(
+    guild: discord.Guild, embed: discord.Embed, files: list = None
+):
+  log_channel = guild.get_channel(LOG_CHANNEL_ID)
+  if log_channel:
+    if files:
+      await log_channel.send(embed=embed, files=files)
+    else:
+      await log_channel.send(embed=embed)
 
 
 # ==========================================
 # 2. UI 컴포넌트 & 모달
 # ==========================================
 
+
 class LicenseRegisterModal(discord.ui.Modal, title="라이센스 코드 등록"):
-    license_code = discord.ui.TextInput(
-        label="발급받은 라이센스 코드를 입력하세요",
-        placeholder="KEY-XXXXXXXXXXXX",
-        style=discord.TextStyle.short,
-        required=True
+
+  license_code = discord.ui.TextInput(
+      label="발급받은 라이센스 코드를 입력하세요",
+      placeholder="KEY-XXXXXXXXXXXX",
+      style=discord.TextStyle.short,
+      required=True,
+  )
+
+  async def on_submit(self, interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    code = self.license_code.value.strip()
+
+    if code not in license_db:
+      await interaction.followup.send(
+          "❌ 유효하지 않은 라이센스 코드입니다.", ephemeral=True
+      )
+      return
+
+    lic_info = license_db[code]
+    if lic_info["used"]:
+      await interaction.followup.send(
+          "❌ 이미 사용된 라이센스 코드입니다.", ephemeral=True
+      )
+      return
+
+    days = lic_info["days"]
+    expire_time = datetime.now() + timedelta(days=days)
+    lic_info["used"] = True
+    lic_info["user_id"] = interaction.user.id
+    lic_info["expires_at"] = expire_time
+
+    user_licenses[interaction.user.id] = {
+        "guild_id": interaction.guild.id,
+        "code": code,
+        "expires_at": expire_time,
+    }
+
+    role = interaction.guild.get_role(LICENSE_ROLE_ID)
+    if role:
+      await interaction.user.add_roles(role)
+
+    embed = discord.Embed(
+        title="라이센스 등록 완료",
+        description=(
+            f"{interaction.user.mention} 님의 라이센스가 성공적으로"
+            " 등록되었습니다!"
+        ),
+        color=0x2ECC71,
+    )
+    embed.add_field(name="입력한 코드", value=f"`{code}`", inline=False)
+    embed.add_field(
+        name="만료 예정일",
+        value=(
+            f"<t:{int(expire_time.timestamp())}:F>"
+            f" (<t:{int(expire_time.timestamp())}:R>)"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="지급된 역할", value=f"<@&{LICENSE_ROLE_ID}>", inline=False
     )
 
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        code = self.license_code.value.strip()
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
-        if code not in license_db:
-            await interaction.followup.send("❌ 유효하지 않은 라이센스 코드입니다.", ephemeral=True)
-            return
+    try:
+      dm_embed = discord.Embed(
+          title="[라이센스 등록 및 역할 지급 완료]",
+          description=(
+              f"**{interaction.guild.name}** 서버에서 라이센스 코드가 정상"
+              " 등록되었습니다."
+          ),
+          color=PASTEL_PINK,
+      )
+      dm_embed.add_field(
+          name="등록한 코드", value=f"`{code}`", inline=False
+      )
+      dm_embed.add_field(
+          name="지급된 역할", value=f"<@&{LICENSE_ROLE_ID}>", inline=True
+      )
+      dm_embed.add_field(
+          name="만료 예정일",
+          value=(
+              f"<t:{int(expire_time.timestamp())}:F>\n(<t:{int(expire_time.timestamp())}:R>)"
+          ),
+          inline=False,
+      )
+      dm_embed.set_footer(
+          text="만료 시간이 지나면 역할이 자동으로 회수됩니다."
+      )
+      await interaction.user.send(embed=dm_embed)
+    except discord.Forbidden:
+      pass
 
-        lic_info = license_db[code]
-        if lic_info["used"]:
-            await interaction.followup.send("❌ 이미 사용된 라이센스 코드입니다.", ephemeral=True)
-            return
-
-        days = lic_info["days"]
-        expire_time = datetime.now() + timedelta(days=days)
-        lic_info["used"] = True
-        lic_info["user_id"] = interaction.user.id
-        lic_info["expires_at"] = expire_time
-
-        user_licenses[interaction.user.id] = {
-            "guild_id": interaction.guild.id,
-            "code": code,
-            "expires_at": expire_time
-        }
-
-        role = interaction.guild.get_role(LICENSE_ROLE_ID)
-        if role:
-            await interaction.user.add_roles(role)
-
-        embed = discord.Embed(
-            title="라이센스 등록 완료",
-            description=f"{interaction.user.mention} 님의 라이센스가 성공적으로 등록되었습니다!",
-            color=0x2ecc71
-        )
-        embed.add_field(name="입력한 코드", value=f"`{code}`", inline=False)
-        embed.add_field(name="만료 예정일", value=f"<t:{int(expire_time.timestamp())}:F> (<t:{int(expire_time.timestamp())}:R>)", inline=False)
-        embed.add_field(name="지급된 역할", value=f"<@&{LICENSE_ROLE_ID}>", inline=False)
-
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
-        try:
-            dm_embed = discord.Embed(
-                title="[라이센스 등록 및 역할 지급 완료]",
-                description=f"**{interaction.guild.name}** 서버에서 라이센스 코드가 정상 등록되었습니다.",
-                color=PASTEL_PINK
-            )
-            dm_embed.add_field(name="등록한 코드", value=f"`{code}`", inline=False)
-            dm_embed.add_field(name="지급된 역할", value=f"<@&{LICENSE_ROLE_ID}>", inline=True)
-            dm_embed.add_field(
-                name="만료 예정일",
-                value=f"<t:{int(expire_time.timestamp())}:F>\n(<t:{int(expire_time.timestamp())}:R>)",
-                inline=False
-            )
-            dm_embed.set_footer(text="만료 시간이 지나면 역할이 자동으로 회수됩니다.")
-            await interaction.user.send(embed=dm_embed)
-        except discord.Forbidden:
-            pass
-
-        log_embed = discord.Embed(title="[라이센스 등록 기록]", color=0x2ecc71)
-        log_embed.add_field(name="사용자", value=f"{interaction.user.mention} ({interaction.user.id})", inline=True)
-        log_embed.add_field(name="코드", value=f"`{code}`", inline=True)
-        log_embed.add_field(name="만료일", value=f"{expire_time.strftime('%Y-%m-%d %H:%M:%S')}", inline=False)
-        await send_log(interaction.guild, log_embed)
+    log_embed = discord.Embed(
+        title="[라이센스 등록 기록]", color=0x2ECC71
+    )
+    log_embed.add_field(
+        name="사용자",
+        value=f"{interaction.user.mention} ({interaction.user.id})",
+        inline=True,
+    )
+    log_embed.add_field(name="코드", value=f"`{code}`", inline=True)
+    log_embed.add_field(
+        name="만료일",
+        value=f"{expire_time.strftime('%Y-%m-%d %H:%M:%S')}",
+        inline=False,
+    )
+    await send_log(interaction.guild, log_embed)
 
 
 class RejectReasonModal(discord.ui.Modal, title="신청 거절 사유 입력"):
-    def __init__(self, applicant: discord.Member, ticket_channel: discord.TextChannel):
-        super().__init__()
-        self.applicant = applicant
-        self.ticket_channel = ticket_channel
 
-    reason = discord.ui.TextInput(
-        label="거절 사유를 입력하세요",
-        placeholder="예: 인증 서류 불충분, 조건 미달 등",
-        style=discord.TextStyle.paragraph,
-        required=True
+  def __init__(
+      self, applicant: discord.Member, ticket_channel: discord.TextChannel
+  ):
+    super().__init__()
+    self.applicant = applicant
+    self.ticket_channel = ticket_channel
+
+  reason = discord.ui.TextInput(
+      label="거절 사유를 입력하세요",
+      placeholder="예: 인증 서류 불충분, 조건 미달 등",
+      style=discord.TextStyle.paragraph,
+      required=True,
+  )
+
+  async def on_submit(self, interaction: discord.Interaction):
+    await interaction.response.defer()
+
+    embed = discord.Embed(
+        title="진행자 신청이 거절되었습니다",
+        description=(
+            f"{self.applicant.mention} 님의 진행자 신청이 아래 사유로 인해"
+            " 거절되었습니다."
+        ),
+        color=0xE74C3C,
+    )
+    embed.add_field(
+        name="거절 사유", value=f"```\n{self.reason.value}\n```", inline=False
     )
 
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+    await self.ticket_channel.send(
+        content=f"{self.applicant.mention}", embed=embed
+    )
+    await interaction.followup.send(
+        "거절 처리가 완료되었습니다.", ephemeral=True
+    )
 
-        embed = discord.Embed(
-            title="진행자 신청이 거절되었습니다",
-            description=f"{self.applicant.mention} 님의 진행자 신청이 아래 사유로 인해 거절되었습니다.",
-            color=0xe74c3c
-        )
-        embed.add_field(name="거절 사유", value=f"```\n{self.reason.value}\n```", inline=False)
-
-        await self.ticket_channel.send(content=f"{self.applicant.mention}", embed=embed)
-        await interaction.followup.send("거절 처리가 완료되었습니다.", ephemeral=True)
-
-        log_embed = discord.Embed(title="[신청 거절 기록]", color=0xe74c3c)
-        log_embed.add_field(name="신청자", value=f"{self.applicant.mention} ({self.applicant.id})", inline=True)
-        log_embed.add_field(name="처리 관리자", value=f"{interaction.user.mention}", inline=True)
-        log_embed.add_field(name="거절 사유", value=f"```\n{self.reason.value}\n```", inline=False)
-        log_embed.set_footer(text=f"티켓 채널: {self.ticket_channel.name}")
-        await send_log(interaction.guild, log_embed)
+    log_embed = discord.Embed(title="[신청 거절 기록]", color=0xE74C3C)
+    log_embed.add_field(
+        name="신청자",
+        value=f"{self.applicant.mention} ({self.applicant.id})",
+        inline=True,
+    )
+    log_embed.add_field(
+        name="처리 관리자", value=f"{interaction.user.mention}", inline=True
+    )
+    log_embed.add_field(
+        name="거절 사유", value=f"```\n{self.reason.value}\n```", inline=False
+    )
+    log_embed.set_footer(text=f"티켓 채널: {self.ticket_channel.name}")
+    await send_log(interaction.guild, log_embed)
 
 
 class HoldReasonModal(discord.ui.Modal, title="신청 보류 사유 입력"):
-    def __init__(self, applicant: discord.Member, ticket_channel: discord.TextChannel):
-        super().__init__()
-        self.applicant = applicant
-        self.ticket_channel = ticket_channel
 
-    reason = discord.ui.TextInput(
-        label="보류 사유를 입력하세요",
-        placeholder="예: 추후 서류 재제출 필요, 추가 확인 중 등",
-        style=discord.TextStyle.paragraph,
-        required=True
+  def __init__(
+      self, applicant: discord.Member, ticket_channel: discord.TextChannel
+  ):
+    super().__init__()
+    self.applicant = applicant
+    self.ticket_channel = ticket_channel
+
+  reason = discord.ui.TextInput(
+      label="보류 사유를 입력하세요",
+      placeholder="예: 추후 서류 재제출 필요, 추가 확인 중 등",
+      style=discord.TextStyle.paragraph,
+      required=True,
+  )
+
+  async def on_submit(self, interaction: discord.Interaction):
+    await interaction.response.defer()
+
+    embed = discord.Embed(
+        title="진행자 신청이 보류되었습니다",
+        description=(
+            f"{self.applicant.mention} 님의 진행자 신청이 보류"
+            " 처리되었습니다."
+        ),
+        color=0xE67E22,
+    )
+    reason_text = f"```\n{self.reason.value}\n```"
+    embed.add_field(
+        name="보류 사유 및 안내", value=reason_text, inline=False
+    )
+    await self.ticket_channel.send(
+        content=f"{self.applicant.mention}", embed=embed
+    )
+    await interaction.followup.send(
+        "보류 처리가 완료되었습니다.", ephemeral=True
     )
 
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-
-        embed = discord.Embed(
-            title="진행자 신청이 보류되었습니다",
-            description=f"{self.applicant.mention} 님의 진행자 신청이 보류 처리되었습니다.",
-            color=0xe67e22
-        )
-        reason_text = f"```\n{self.reason.value}\n```"
-        embed.add_field(name="보류 사유 및 안내", value=reason_text, inline=False)
-        await self.ticket_channel.send(content=f"{self.applicant.mention}", embed=embed)
-        await interaction.followup.send("보류 처리가 완료되었습니다.", ephemeral=True)
-
-        log_embed = discord.Embed(title="[신청 보류 기록]", color=0xe67e22)
-        log_embed.add_field(name="신청자", value=f"{self.applicant.mention} ({self.applicant.id})", inline=True)
-        log_embed.add_field(name="처리 관리자", value=f"{interaction.user.mention}", inline=True)
-        log_embed.add_field(name="보류 사유", value=reason_text, inline=False)
-        log_embed.set_footer(text=f"티켓 채널: {self.ticket_channel.name}")
-        await send_log(interaction.guild, log_embed)
+    log_embed = discord.Embed(title="[신청 보류 기록]", color=0xE67E22)
+    log_embed.add_field(
+        name="신청자",
+        value=f"{self.applicant.mention} ({self.applicant.id})",
+        inline=True,
+    )
+    log_embed.add_field(
+        name="처리 관리자", value=f"{interaction.user.mention}", inline=True
+    )
+    log_embed.add_field(
+        name="보류 사유", value=reason_text, inline=False
+    )
+    log_embed.set_footer(text=f"티켓 채널: {self.ticket_channel.name}")
+    await send_log(interaction.guild, log_embed)
 
 
 class AdminControlView(discord.ui.View):
-    def __init__(self, applicant: discord.Member, ticket_channel: discord.TextChannel):
-        super().__init__(timeout=None)
-        self.applicant = applicant
-        self.ticket_channel = ticket_channel
 
-    @discord.ui.button(label="입금 승인", style=discord.ButtonStyle.success, custom_id="admin_pay_approve")
-    async def pay_approve(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ 관리자만 클릭할 수 있습니다.", ephemeral=True)
-            return
+  def __init__(
+      self, applicant: discord.Member, ticket_channel: discord.TextChannel
+  ):
+    super().__init__(timeout=None)
+    self.applicant = applicant
+    self.ticket_channel = ticket_channel
 
-        license_code = f"KEY-{uuid.uuid4().hex[:12].upper()}"
-        license_db[license_code] = {
-            "days": 7,
-            "used": False,
-            "user_id": None,
-            "expires_at": None
-        }
+  @discord.ui.button(
+      label="입금 승인",
+      style=discord.ButtonStyle.success,
+      custom_id="admin_pay_approve",
+  )
+  async def pay_approve(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
+    if not interaction.user.guild_permissions.administrator:
+      await interaction.response.send_message(
+          "❌ 관리자만 클릭할 수 있습니다.", ephemeral=True
+      )
+      return
 
-        completed_embed = discord.Embed(
-            title="입금이 완료되었습니다",
-            description=f"{self.applicant.mention} 님의 입금이 확인되어 **진행자 신청이 승인**되었습니다!",
-            color=0x2ecc71
+    license_code = f"KEY-{uuid.uuid4().hex[:12].upper()}"
+    license_db[license_code] = {
+        "days": 7,
+        "used": False,
+        "user_id": None,
+        "expires_at": None,
+    }
+
+    completed_embed = discord.Embed(
+        title="입금이 완료되었습니다",
+        description=(
+            f"{self.applicant.mention} 님의 입금이 확인되어 **진행자"
+            " 신청이 승인**되었습니다!"
+        ),
+        color=0x2ECC71,
+    )
+    await self.ticket_channel.send(embed=completed_embed)
+
+    lic_embed = discord.Embed(
+        title="7일 라이센스 코드가 발급되었습니다",
+        description=(
+            f"{self.applicant.mention} 님, 아래 발급된 코드를 복사하여"
+            " 사용해 주세요."
+        ),
+        color=0x3498DB,
+    )
+    lic_embed.add_field(
+        name="발급된 라이센스 코드",
+        value=f"```\n{license_code}\n```",
+        inline=False,
+    )
+    lic_embed.add_field(
+        name="등록 안내",
+        value=(
+            "메인 채널의 **`라이센스 등록`** 버튼을 누른 후 위 코드를"
+            " 입력하여 역할을 지급받으세요."
+        ),
+        inline=False,
+    )
+    await self.ticket_channel.send(embed=lic_embed)
+    await self.ticket_channel.send(license_code)
+
+    try:
+      dm_embed = discord.Embed(
+          title="[7일 라이센스 코드 발급 완료]",
+          description=(
+              f"안녕하세요, **{interaction.guild.name}** 서버의 진행자 신청"
+              " 승인에 따른 라이센스 코드가 발급되었습니다."
+          ),
+          color=0x2ECC71,
+      )
+      dm_embed.add_field(
+          name="발급된 라이센스 코드",
+          value=f"```\n{license_code}\n```",
+          inline=False,
+      )
+      dm_embed.add_field(
+          name="유효기간",
+          value="7일 (등록 시점부터 자동 차감)",
+          inline=False,
+      )
+      dm_embed.set_footer(
+          text="메인 채널의 [라이센스 등록] 버튼을 눌러 등록을 완료해 주세요."
+      )
+      await self.applicant.send(embed=dm_embed)
+    except discord.Forbidden:
+      await self.ticket_channel.send(
+          f"⚠️ {self.applicant.mention} 님의 DM이 차단되어 있어 DM"
+          " 전송에 실패했습니다."
+      )
+
+    await interaction.response.send_message(
+        "입금 승인 및 7일 라이센스 발급을 완료했습니다.", ephemeral=True
+    )
+
+    log_embed = discord.Embed(
+        title="[신청 승인 및 라이센스 발급 기록]", color=0x2ECC71
+    )
+    log_embed.add_field(
+        name="신청자",
+        value=f"{self.applicant.mention} ({self.applicant.id})",
+        inline=True,
+    )
+    log_embed.add_field(
+        name="처리 관리자", value=f"{interaction.user.mention}", inline=True
+    )
+    log_embed.add_field(
+        name="발급 코드 (7일)", value=f"`{license_code}`", inline=False
+    )
+    log_embed.set_footer(text=f"티켓 채널: {self.ticket_channel.name}")
+    await send_log(interaction.guild, log_embed)
+
+  @discord.ui.button(
+      label="입금 거절",
+      style=discord.ButtonStyle.danger,
+      custom_id="admin_pay_reject",
+  )
+  async def pay_reject(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
+    if not interaction.user.guild_permissions.administrator:
+      await interaction.response.send_message(
+          "❌ 관리자만 클릭할 수 있습니다.", ephemeral=True
+      )
+      return
+
+    embed = discord.Embed(
+        title="입금 거절 안내",
+        description=(
+            f"{self.applicant.mention} 님, 입금 정보가 일치하지 않거나"
+            " 입금이 확인되지 않았습니다. 계좌 및 입금자명을 재확인 후"
+            " 문의해 주세요."
+        ),
+        color=0xE74C3C,
+    )
+    await self.ticket_channel.send(embed=embed)
+    await interaction.response.send_message(
+        "입금 거절 안내를 전송했습니다.", ephemeral=True
+    )
+
+    log_embed = discord.Embed(title="[입금 거절 기록]", color=0xE74C3C)
+    log_embed.add_field(
+        name="신청자",
+        value=f"{self.applicant.mention} ({self.applicant.id})",
+        inline=True,
+    )
+    log_embed.add_field(
+        name="처리 관리자", value=f"{interaction.user.mention}", inline=True
+    )
+    log_embed.set_footer(text=f"티켓 채널: {self.ticket_channel.name}")
+    await send_log(interaction.guild, log_embed)
+
+  @discord.ui.button(
+      label="신청 보류",
+      style=discord.ButtonStyle.secondary,
+      custom_id="admin_hold",
+  )
+  async def hold(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
+    if not interaction.user.guild_permissions.administrator:
+      await interaction.response.send_message(
+          "❌ 관리자만 클릭할 수 있습니다.", ephemeral=True
+      )
+      return
+    await interaction.response.send_modal(
+        HoldReasonModal(
+            applicant=self.applicant, ticket_channel=self.ticket_channel
         )
-        await self.ticket_channel.send(embed=completed_embed)
+    )
 
-        lic_embed = discord.Embed(
-            title="7일 라이센스 코드가 발급되었습니다",
-            description=f"{self.applicant.mention} 님, 아래 발급된 코드를 복사하여 사용해 주세요.",
-            color=0x3498db
+  @discord.ui.button(
+      label="신청 거절",
+      style=discord.ButtonStyle.danger,
+      custom_id="admin_reject",
+  )
+  async def reject(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
+    if not interaction.user.guild_permissions.administrator:
+      await interaction.response.send_message(
+          "❌ 관리자만 클릭할 수 있습니다.", ephemeral=True
+      )
+      return
+    await interaction.response.send_modal(
+        RejectReasonModal(
+            applicant=self.applicant, ticket_channel=self.ticket_channel
         )
-        lic_embed.add_field(
-            name="발급된 라이센스 코드",
-            value=f"```\n{license_code}\n```",
-            inline=False
-        )
-        lic_embed.add_field(
-            name="등록 안내",
-            value="메인 채널의 **`라이센스 등록`** 버튼을 누른 후 위 코드를 입력하여 역할을 지급받으세요.",
-            inline=False
-        )
-        await self.ticket_channel.send(embed=lic_embed)
-        await self.ticket_channel.send(license_code)
+    )
 
-        try:
-            dm_embed = discord.Embed(
-                title="[7일 라이센스 코드 발급 완료]",
-                description=f"안녕하세요, **{interaction.guild.name}** 서버의 진행자 신청 승인에 따른 라이센스 코드가 발급되었습니다.",
-                color=0x2ecc71
-            )
-            dm_embed.add_field(name="발급된 라이센스 코드", value=f"```\n{license_code}\n```", inline=False)
-            dm_embed.add_field(name="유효기간", value="7일 (등록 시점부터 자동 차감)", inline=False)
-            dm_embed.set_footer(text="메인 채널의 [라이센스 등록] 버튼을 눌러 등록을 완료해 주세요.")
-            await self.applicant.send(embed=dm_embed)
-        except discord.Forbidden:
-            await self.ticket_channel.send(f"⚠️ {self.applicant.mention} 님의 DM이 차단되어 있어 DM 전송에 실패했습니다.")
+  @discord.ui.button(
+      label="티켓 닫기",
+      style=discord.ButtonStyle.secondary,
+      custom_id="admin_close_ticket",
+  )
+  async def close_ticket(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
+    if not interaction.user.guild_permissions.administrator:
+      await interaction.response.send_message(
+          "❌ 관리자만 클릭할 수 있습니다.", ephemeral=True
+      )
+      return
 
-        await interaction.response.send_message("입금 승인 및 7일 라이센스 발급을 완료했습니다.", ephemeral=True)
+    await interaction.response.send_message(
+        "5초 후 티켓 채널이 삭제됩니다..."
+    )
+    log_embed = discord.Embed(title="[티켓 종결 기록]", color=0x95A5A6)
+    log_embed.add_field(
+        name="신청자",
+        value=f"{self.applicant.mention} ({self.applicant.id})",
+        inline=True,
+    )
+    log_embed.add_field(
+        name="종결 처리자", value=f"{interaction.user.mention}", inline=True
+    )
+    log_embed.set_footer(text=f"티켓 채널명: {self.ticket_channel.name}")
+    await send_log(interaction.guild, log_embed)
 
-        log_embed = discord.Embed(title="[신청 승인 및 라이센스 발급 기록]", color=0x2ecc71)
-        log_embed.add_field(name="신청자", value=f"{self.applicant.mention} ({self.applicant.id})", inline=True)
-        log_embed.add_field(name="처리 관리자", value=f"{interaction.user.mention}", inline=True)
-        log_embed.add_field(name="발급 코드 (7일)", value=f"`{license_code}`", inline=False)
-        log_embed.set_footer(text=f"티켓 채널: {self.ticket_channel.name}")
-        await send_log(interaction.guild, log_embed)
-
-    @discord.ui.button(label="입금 거절", style=discord.ButtonStyle.danger, custom_id="admin_pay_reject")
-    async def pay_reject(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ 관리자만 클릭할 수 있습니다.", ephemeral=True)
-            return
-
-        embed = discord.Embed(
-            title="입금 거절 안내",
-            description=f"{self.applicant.mention} 님, 입금 정보가 일치하지 않거나 입금이 확인되지 않았습니다. 계좌 및 입금자명을 재확인 후 문의해 주세요.",
-            color=0xe74c3c
-        )
-        await self.ticket_channel.send(embed=embed)
-        await interaction.response.send_message("입금 거절 안내를 전송했습니다.", ephemeral=True)
-
-        log_embed = discord.Embed(title="[입금 거절 기록]", color=0xe74c3c)
-        log_embed.add_field(name="신청자", value=f"{self.applicant.mention} ({self.applicant.id})", inline=True)
-        log_embed.add_field(name="처리 관리자", value=f"{interaction.user.mention}", inline=True)
-        log_embed.set_footer(text=f"티켓 채널: {self.ticket_channel.name}")
-        await send_log(interaction.guild, log_embed)
-
-    @discord.ui.button(label="신청 보류", style=discord.ButtonStyle.secondary, custom_id="admin_hold")
-    async def hold(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ 관리자만 클릭할 수 있습니다.", ephemeral=True)
-            return
-        await interaction.response.send_modal(HoldReasonModal(applicant=self.applicant, ticket_channel=self.ticket_channel))
-
-    @discord.ui.button(label="신청 거절", style=discord.ButtonStyle.danger, custom_id="admin_reject")
-    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ 관리자만 클릭할 수 있습니다.", ephemeral=True)
-            return
-        await interaction.response.send_modal(RejectReasonModal(applicant=self.applicant, ticket_channel=self.ticket_channel))
-
-    @discord.ui.button(label="티켓 닫기", style=discord.ButtonStyle.secondary, custom_id="admin_close_ticket")
-    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ 관리자만 클릭할 수 있습니다.", ephemeral=True)
-            return
-
-        await interaction.response.send_message("5초 후 티켓 채널이 삭제됩니다...")
-        log_embed = discord.Embed(title="[티켓 종결 기록]", color=0x95a5a6)
-        log_embed.add_field(name="신청자", value=f"{self.applicant.mention} ({self.applicant.id})", inline=True)
-        log_embed.add_field(name="종결 처리자", value=f"{interaction.user.mention}", inline=True)
-        log_embed.set_footer(text=f"티켓 채널명: {self.ticket_channel.name}")
-        await send_log(interaction.guild, log_embed)
-
-        await asyncio.sleep(5)
-        await self.ticket_channel.delete()
+    await asyncio.sleep(5)
+    await self.ticket_channel.delete()
 
 
 class ApplicationModal(discord.ui.Modal, title="진행자 신청서 작성"):
-    platform = discord.ui.TextInput(
-        label="1. 진행자를 진행할 매체를 선택해 주세요.",
-        placeholder="예: 디스코드, 오픈채팅, 둘 다 등",
-        style=discord.TextStyle.short,
-        required=True
+
+  platform = discord.ui.TextInput(
+      label="1. 진행자를 진행할 매체를 선택해 주세요.",
+      placeholder="예: 디스코드, 오픈채팅, 둘 다 등",
+      style=discord.TextStyle.short,
+      required=True,
+  )
+
+  reason = discord.ui.TextInput(
+      label="2. 진행자를 하고 싶은 사유를 작성해 주세요.",
+      placeholder="신청 사유 및 경험 등을 자유롭게 작성해 주세요.",
+      style=discord.TextStyle.paragraph,
+      required=True,
+  )
+
+  async def on_submit(self, interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    guild = interaction.guild
+    member = interaction.user
+    category = guild.get_channel(CATEGORY_ID)
+
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(read_messages=False),
+        member: discord.PermissionOverwrite(
+            read_messages=True, send_messages=True
+        ),
+        guild.me: discord.PermissionOverwrite(
+            read_messages=True, send_messages=True
+        ),
+    }
+
+    ticket_channel = await guild.create_text_channel(
+        name=f"ticket-{member.name}", category=category, overwrites=overwrites
     )
 
-    reason = discord.ui.TextInput(
-        label="2. 진행자를 하고 싶은 사유를 작성해 주세요.",
-        placeholder="신청 사유 및 경험 등을 자유롭게 작성해 주세요.",
-        style=discord.TextStyle.paragraph,
-        required=True
+    user_ticket_state[ticket_channel.id] = {
+        "user_id": member.id,
+        "agreed": False,
+        "awaiting_deposit_confirm": False,
+    }
+
+    await ticket_channel.send(
+        f"{member.mention} 님 안녕하세요. <@&{ADMIN_ROLE_ID}> 가 곧 옵니다.\n개인정보"
+        " 수집 동의 시 **동의**라고 입력해 주세요."
     )
 
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+    form_embed = discord.Embed(title="진행자 신청", color=0x3498DB)
+    form_embed.add_field(
+        name="진행 매체", value=f"```\n{self.platform.value}\n```", inline=False
+    )
+    form_embed.add_field(
+        name="신청 사유", value=f"```\n{self.reason.value}\n```", inline=False
+    )
+    await ticket_channel.send(embed=form_embed)
 
-        guild = interaction.guild
-        member = interaction.user
-        category = guild.get_channel(CATEGORY_ID)
+    admin_panel_channel = guild.get_channel(ADMIN_PANEL_CHANNEL_ID)
+    if admin_panel_channel:
+      admin_embed = discord.Embed(
+          title="관리자 제어 패널",
+          description=(
+              f"**신청자**: {member.mention} ({member.id})\n"
+              f"**티켓 채널**: {ticket_channel.mention}\n\n"
+              "• **입금 승인**: 입금 진행 완료 상태 처리 및 7일 라이센스 발급/DM"
+              " 전송\n"
+              "• **입금 거절**: 입금 거절 안내 전송 및 로그 기록\n"
+              "• **신청 보류**: 보류 사유 전송 및 로그 기록\n"
+              "• **신청 거절**: 거절 사유 전송 및 로그 기록\n"
+              "• **티켓 닫기**: 해당 티켓 삭제 및 로그 기록"
+          ),
+          color=0x34495E,
+      )
+      await admin_panel_channel.send(
+          embed=admin_embed,
+          view=AdminControlView(
+              applicant=member, ticket_channel=ticket_channel
+          ),
+      )
 
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(read_messages=False),
-            member: discord.PermissionOverwrite(read_messages=True, send_messages=True),
-            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
-        }
+    log_embed = discord.Embed(title="[신청서 접수 기록]", color=0x3498DB)
+    log_embed.add_field(
+        name="신청자",
+        value=f"{member.mention} ({member.id})",
+        inline=True,
+    )
+    log_embed.add_field(
+        name="티켓 채널", value=f"{ticket_channel.mention}", inline=True
+    )
+    log_embed.add_field(
+        name="진행 매체", value=f"```\n{self.platform.value}\n```", inline=False
+    )
+    log_embed.add_field(
+        name="신청 사유", value=f"```\n{self.reason.value}\n```", inline=False
+    )
+    await send_log(guild, log_embed)
 
-        ticket_channel = await guild.create_text_channel(
-            name=f"ticket-{member.name}",
-            category=category,
-            overwrites=overwrites
-        )
-
-        user_ticket_state[ticket_channel.id] = {
-            "user_id": member.id,
-            "agreed": False,
-            "awaiting_deposit_confirm": False
-        }
-
-        await ticket_channel.send(
-            f"{member.mention} 님 안녕하세요. <@&{ADMIN_ROLE_ID}> 가 곧 옵니다.\n"
-            f"개인정보 수집 동의 시 **동의**라고 입력해 주세요."
-        )
-
-        form_embed = discord.Embed(title="진행자 신청", color=0x3498db)
-        form_embed.add_field(name="진행 매체", value=f"```\n{self.platform.value}\n```", inline=False)
-        form_embed.add_field(name="신청 사유", value=f"```\n{self.reason.value}\n```", inline=False)
-        await ticket_channel.send(embed=form_embed)
-
-        admin_panel_channel = guild.get_channel(ADMIN_PANEL_CHANNEL_ID)
-        if admin_panel_channel:
-            admin_embed = discord.Embed(
-                title="관리자 제어 패널",
-                description=(
-                    f"**신청자**: {member.mention} ({member.id})\n"
-                    f"**티켓 채널**: {ticket_channel.mention}\n\n"
-                    f"• **입금 승인**: 입금 진행 완료 상태 처리 및 7일 라이센스 발급/DM 전송\n"
-                    f"• **입금 거절**: 입금 거절 안내 전송 및 로그 기록\n"
-                    f"• **신청 보류**: 보류 사유 전송 및 로그 기록\n"
-                    f"• **신청 거절**: 거절 사유 전송 및 로그 기록\n"
-                    f"• **티켓 닫기**: 해당 티켓 삭제 및 로그 기록"
-                ),
-                color=0x34495e
-            )
-            await admin_panel_channel.send(
-                embed=admin_embed,
-                view=AdminControlView(applicant=member, ticket_channel=ticket_channel)
-            )
-
-        log_embed = discord.Embed(title="[신청서 접수 기록]", color=0x3498db)
-        log_embed.add_field(name="신청자", value=f"{member.mention} ({member.id})", inline=True)
-        log_embed.add_field(name="티켓 채널", value=f"{ticket_channel.mention}", inline=True)
-        log_embed.add_field(name="진행 매체", value=f"```\n{self.platform.value}\n```", inline=False)
-        log_embed.add_field(name="신청 사유", value=f"```\n{self.reason.value}\n```", inline=False)
-        await send_log(guild, log_embed)
-
-        await interaction.followup.send(f"티켓이 생성되었습니다: {ticket_channel.mention}", ephemeral=True)
+    await interaction.followup.send(
+        f"티켓이 생성되었습니다: {ticket_channel.mention}", ephemeral=True
+    )
 
 
 class ConfirmApplyView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=60)
 
-    @discord.ui.button(label="예", style=discord.ButtonStyle.success, custom_id="btn_confirm_yes")
-    async def confirm_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_recruiting:
-            await interaction.response.send_message("❌ 현재 진행자 모집 기간이 아닙니다.", ephemeral=True)
-            return
-        await interaction.response.send_modal(ApplicationModal())
+  def __init__(self):
+    super().__init__(timeout=60)
 
-    @discord.ui.button(label="아니오", style=discord.ButtonStyle.danger, custom_id="btn_confirm_no")
-    async def confirm_no(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("신청이 취소되었습니다.", ephemeral=True)
+  @discord.ui.button(
+      label="예",
+      style=discord.ButtonStyle.success,
+      custom_id="btn_confirm_yes",
+  )
+  async def confirm_yes(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
+    if not is_recruiting:
+      await interaction.response.send_message(
+          "❌ 현재 진행자 모집 기간이 아닙니다.", ephemeral=True
+      )
+      return
+    await interaction.response.send_modal(ApplicationModal())
+
+  @discord.ui.button(
+      label="아니오",
+      style=discord.ButtonStyle.danger,
+      custom_id="btn_confirm_no",
+  )
+  async def confirm_no(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
+    await interaction.response.send_message(
+        "신청이 취소되었습니다.", ephemeral=True
+    )
 
 
 class MainMenuView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
 
-    @discord.ui.button(label="진행자 신청", style=discord.ButtonStyle.primary, custom_id="main_apply")
-    async def apply(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_recruiting:
-            await interaction.response.send_message("❌ 현재 진행자 모집 기간이 아닙니다.", ephemeral=True)
-            return
+  def __init__(self):
+    super().__init__(timeout=None)
 
-        await interaction.response.send_message(
-            "**진행자를 신청하시겠습니까?**",
-            view=ConfirmApplyView(),
-            ephemeral=True
-        )
+  @discord.ui.button(
+      label="진행자 신청",
+      style=discord.ButtonStyle.primary,
+      custom_id="main_apply",
+  )
+  async def apply(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
+    if not is_recruiting:
+      await interaction.response.send_message(
+          "❌ 현재 진행자 모집 기간이 아닙니다.", ephemeral=True
+      )
+      return
 
-    @discord.ui.button(label="라이센스 등록", style=discord.ButtonStyle.success, custom_id="main_register_license")
-    async def register_license(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(LicenseRegisterModal())
+    await interaction.response.send_message(
+        "**진행자를 신청하시겠습니까?**",
+        view=ConfirmApplyView(),
+        ephemeral=True,
+    )
 
-    @discord.ui.button(label="진행자 설명", style=discord.ButtonStyle.secondary, custom_id="main_info")
-    async def info(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = discord.Embed(
-            title="📖 진행자 안내",
-            description="""**디코 / 옾챗 내에서 구매자에게 판매하는 역할입니다.**
+  @discord.ui.button(
+      label="라이센스 등록",
+      style=discord.ButtonStyle.success,
+      custom_id="main_register_license",
+  )
+  async def register_license(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
+    await interaction.response.send_modal(LicenseRegisterModal())
+
+  @discord.ui.button(
+      label="진행자 설명",
+      style=discord.ButtonStyle.secondary,
+      custom_id="main_info",
+  )
+  async def info(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
+    embed = discord.Embed(
+        title="📖 진행자 안내",
+        description="""**디코 / 옾챗 내에서 구매자에게 판매하는 역할입니다.**
 **구매 문의부터 거래 진행, 상품 지급까지 전부 담당해야 됩니다**
 일주일 ▶ 14,000원
 -# 최대 14일만 신청됩니다.""",
-            color=PASTEL_PINK
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        color=PASTEL_PINK,
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 # ==========================================
@@ -445,278 +696,343 @@ class MainMenuView(discord.ui.View):
 # ==========================================
 @tasks.loop(minutes=1)
 async def check_expired_licenses():
-    now = datetime.now()
-    expired_users = []
+  now = datetime.now()
+  expired_users = []
 
-    for user_id, info in list(user_licenses.items()):
-        if now >= info["expires_at"]:
-            expired_users.append((user_id, info))
+  for user_id, info in list(user_licenses.items()):
+    if now >= info["expires_at"]:
+      expired_users.append((user_id, info))
 
-    for user_id, info in expired_users:
-        guild = bot.get_guild(info["guild_id"])
-        if guild:
-            member = guild.get_member(user_id)
-            if member:
-                role = guild.get_role(LICENSE_ROLE_ID)
-                if role and role in member.roles:
-                    await member.remove_roles(role)
+  for user_id, info in expired_users:
+    guild = bot.get_guild(info["guild_id"])
+    if guild:
+      member = guild.get_member(user_id)
+      if member:
+        role = guild.get_role(LICENSE_ROLE_ID)
+        if role and role in member.roles:
+          await member.remove_roles(role)
 
-                try:
-                    embed = discord.Embed(
-                        title="라이센스 만료 안내",
-                        description="진행자 라이센스 기간(7일)이 만료되어 역할이 자동 회수되었습니다. 연장을 원하실 경우 재신청해 주시기 바랍니다.",
-                        color=0xe74c3c
-                    )
-                    await member.send(embed=embed)
-                except discord.Forbidden:
-                    pass
+        try:
+          embed = discord.Embed(
+              title="라이센스 만료 안내",
+              description=(
+                  "진행자 라이센스 기간(7일)이 만료되어 역할이 자동"
+                  " 회수되었습니다. 연장을 원하실 경우 재신청해 주시기"
+                  " 바랍니다."
+              ),
+              color=0xE74C3C,
+          )
+          await member.send(embed=embed)
+        except discord.Forbidden:
+          pass
 
-                log_embed = discord.Embed(title="[라이센스 만료 회수 기록]", color=0xe74c3c)
-                log_embed.add_field(name="사용자", value=f"{member.mention} ({member.id})", inline=True)
-                log_embed.add_field(name="회수된 역할", value=f"<@&{LICENSE_ROLE_ID}>", inline=True)
-                await send_log(guild, log_embed)
+        log_embed = discord.Embed(
+            title="[라이센스 만료 회수 기록]", color=0xE74C3C
+        )
+        log_embed.add_field(
+            name="사용자",
+            value=f"{member.mention} ({member.id})",
+            inline=True,
+        )
+        log_embed.add_field(
+            name="회수된 역할", value=f"<@&{LICENSE_ROLE_ID}>", inline=True
+        )
+        await send_log(guild, log_embed)
 
-        del user_licenses[user_id]
+    del user_licenses[user_id]
 
 
 # ==========================================
 # 4. 이벤트 및 메시지 감지
 # ==========================================
 
+
 @bot.event
 async def on_message(message):
-    if message.author.bot:
-        return
+  if message.author.bot:
+    return
 
-    # ------------------------------------------
-    # [추가된 기능] ChatGPT AI 질문 응답 ("토비야 ...")
-    # ------------------------------------------
-    if message.content.startswith("토비야"):
-        user_prompt = message.content[3:].strip() # "토비야" 이후의 질문 내용만 추출
-        
-        if not user_prompt:
-            await message.reply("네! 궁금한 점이 있으신가요? 예: `토비야 로벅스 어디서 구매해?`")
-            return
+  # ------------------------------------------
+  # [서버 규칙 안내 적용] ChatGPT AI 질문 응답 ("토비야 ...")
+  # ------------------------------------------
+  if message.content.startswith("토비야"):
+    user_prompt = message.content[3:].strip()  # "토비야" 이후의 질문 내용만 추출
 
-        if not openai_client:
-            await message.reply("❌ OpenAI API 키가 설정되지 않아 답변할 수 없습니다.")
-            return
+    if not user_prompt:
+      await message.reply(
+          "네! 궁금한 점이 있으신가요? 예: `토비야 어디서 구매해?` 또는 `토비야 환불돼?`"
+      )
+      return
 
-        async with message.channel.typing():
-            try:
-                # ChatGPT API 호출 (gpt-4o-mini 사용)
-                response = await openai_client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {
-                            "role": "system", 
-                            "content": (
-                                "너는 디스코드 서버의 친절하고 친근한 AI 마스코트 '토비'야. "
-                                "사용자의 질문에 한국어로 명확하고 유용하게 답해줘."
-                            )
-                        },
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    max_tokens=800
-                )
-                ai_reply = response.choices[0].message.content
-                await message.reply(ai_reply)
-            except Exception as e:
-                await message.reply(f"❌ 답변 생성 중 오류가 발생했습니다: {e}")
-        return
+    if not openai_client:
+      await message.reply(
+          "❌ OpenAI API 키가 설정되지 않아 답변할 수 없습니다."
+      )
+      return
 
-    # ------------------------------------------
-    # 기존 티켓/인증 절차 핸들러
-    # ------------------------------------------
-    state = user_ticket_state.get(message.channel.id)
-
-    # 1. "동의" 입력 시 안내문 출력
-    if message.content.strip() == "동의" and state and not state["agreed"]:
-        state["agreed"] = True
-        embed = discord.Embed(
-            title="개인정보 및 거래 인증 절차 안내",
-            description="아래 절차에 따라 인증 정보를 제출해 주세요. (제출 시 반드시 **봇을 멘션**하여 보내주세요)",
-            color=discord.Color.blue()
-        )
-        embed.add_field(
-            name="1. 계좌 인증",
-            value=(
-                "ㆍ 은행명 (서로 다른 은행명)\n"
-                "ㆍ 계좌번호 (가상계좌 불가, 2개이상)\n"
-                "ㆍ 예금주명\n\n"
-                "※ 필요 시 본인 명의 확인을 위해 예금주가 표시된 화면을 요청할 수 있습니다."
-            ),
-            inline=False
-        )
-        embed.add_field(
-            name="2. 전화번호 인증",
-            value=(
-                "인증 방법 (전화번호)\n\n"
-                "**iOS :**\n"
-                "1 . 설정 앱을 실행합니다.\n"
-                "2 . 검색란에 ‘ 전화 ’ 입력 후 전화 아이콘 클릭.\n"
-                "3 . 나의 전화번호가 보이는 화면을 준비합니다.\n"
-                "4 . 저와 대화 중인 채팅창이 함께 보이도록 화면을 녹화하여 제출해 주세요.\n\n"
-                "**Android :**\n"
-                "1 . 설정 앱을 실행합니다.\n"
-                "2 . 휴대전화 정보 또는 휴대전화 정보 → 상태 정보로 이동합니다.\n"
-                "    (기기에 따라 SIM 상태, 내 전화번호 메뉴일 수도 있습니다.)\n"
-                "3 . 전화번호가 보이는 화면을 준비합니다.\n"
-                "4 . 저와 대화 중인 채팅창이 함께 보이도록 화면을 녹화하여 제출해 주세요."
-            ),
-            inline=False
-        )
-        embed.add_field(
-            name="3. 거래 인증",
-            value=(
-                "아래 정보를 사진 또는 링크로 보내주세요.\n\n"
-                "ㆍ 네이버 카페, 옾챗, 디코 등 거래 내역이 확인 가능한 링크 또는 사진을 보내주세요\n"
-                "ㆍ 첫 거래 날짜가 확인 가능하면 함께 보내주세요\n\n"
-                "⚠️ **주의사항**\n"
-                "모두 현시각과 다를 시, 인정이 되지 않습니다. 도용, 합성 및 AI 의심이 날 경우, 위 방법과 다른 인증 수단을 요청할 수 있으니, 이 점 참고해 주시길 바랍니다.\n\n"
-                "📌 **중요**: 정보를 제출하실 때는 반드시 **봇을 멘션(@봇)**하고 메시지나 사진을 작성해 주세요!"
-            ),
-            inline=False
+    async with message.channel.typing():
+      try:
+        # 서버 전용 규칙 및 짧은 답변 지침 추가
+        system_instruction = (
+            "너는 이 디스코드 서버의 AI 마스코트 '토비'야.\n"
+            "반드시 군더더기 없이 짧고 핵심 위주로 한국어로 답변해.\n\n"
+            "[서버 안내 및 핵심 규칙]\n"
+            "1. 문의/상담: <#1457035868819951911> 채널 이용\n"
+            "2. 구매 후기 작성: <#1457384179535712473> 채널 이용\n"
+            "3. 재고 확인: '판매자 공간' 카테고리에 있는 채널 확인\n"
+            "4. 구매 방법: '판매자' 카테고리 맨 아래 '구매하기' 채널 확인\n"
+            "5. 거래 수칙 및 환불:\n"
+            "   - 모든 거래는 환불 불가능\n"
+            "   - 입금 후 이중창 인증은 1분 이내 진행\n"
+            "   - 거래 완료 후 계정 정지/회수 등의 문제는 서버에서 책임지지 않음"
+            " (보상/환불 불가)\n"
+            "   - 욕설, 비방, 도배, 멘션테러, 재촉 금지 (위반 시 지급 지연)\n"
+            "   - 개인정보(전화번호, 계좌번호 등) 무단 유출 엄금\n"
+            "6. 서버 수칙:\n"
+            "   - 비매너, 스팸/홍보(DM 포함), 무단 개인 거래 즉시 제재/강퇴\n"
+            "   - Seller 역할이 있는 유저만 판매 가능\n"
+            "   - 재고가 없거나 불필요한 반복 티켓 생성 금지 (영구 이용 제한"
+            " 가능)\n"
+            "   - 기타 항목은 서버 '이용안내' 스레드 참고"
         )
 
-        if os.path.exists(IMAGE_FILE_NAME):
-            image_file = discord.File(IMAGE_FILE_NAME, filename=IMAGE_FILE_NAME)
-            embed.set_image(url=f"attachment://{IMAGE_FILE_NAME}")
-            await message.channel.send(file=image_file, embed=embed)
-        else:
-            await message.channel.send(embed=embed)
-
-        await bot.process_commands(message)
-        return
-
-    # 2. 동의 후 정보 제출 (반드시 봇이 멘션되어 있어야 인식하여 저장)
-    if state and state["agreed"] and not state["awaiting_deposit_confirm"]:
-        if bot.user in message.mentions:
-            files_to_send = []
-            if message.attachments:
-                for attachment in message.attachments:
-                    file_data = await attachment.to_file()
-                    files_to_send.append(file_data)
-
-            cleaned_content = message.content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip()
-
-            if cleaned_content or files_to_send:
-                log_embed = discord.Embed(
-                    title="[개인정보 인증 서류 제출]",
-                    description=f"**신청자**: {message.author.mention} ({message.author.id})\n**채널**: {message.channel.mention}",
-                    color=0x3498db,
-                    timestamp=datetime.now()
-                )
-                if cleaned_content:
-                    log_embed.add_field(name="제출 내용", value=cleaned_content, inline=False)
-
-                await send_log(message.guild, log_embed, files=files_to_send)
-
-                state["awaiting_deposit_confirm"] = True
-                await message.channel.send(
-                    f"{message.author.mention} 님, 제출해 주신 개인정보 및 인증 서류 저장이 완료되었습니다.\n\n"
-                    f"**입금을 진행하시겠습니까? 동의하실 경우 `예`라고 입력해 주세요.**"
-                )
-
-        await bot.process_commands(message)
-        return
-
-    # 3. 유저가 "예"라고 입력 시 자동으로 입금 안내 메시지 출력
-    if message.content.strip() == "예" and state and state["awaiting_deposit_confirm"]:
-        state["awaiting_deposit_confirm"] = False
-
-        embed = discord.Embed(
-            title="입금 진행 중...",
-            description=(
-                f"{message.author.mention} 님, 계좌 정보를 안내해 드립니다.\n"
-                f"아래 계좌로 입금 후 이중창 인증을 완료해 주세요.\n\n"
-                f"• **우리은행 `49306531218364` (ㅈㅈㅎ)**\n"
-                f"• **금액: 14,000원 (7일)**"
-            ),
-            color=0xf1c40f
+        # ChatGPT API 호출 (gpt-4o-mini 사용)
+        response = await openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_instruction},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=500,
         )
-        await message.channel.send(embed=embed)
+        ai_reply = response.choices[0].message.content
+        await message.reply(ai_reply)
+      except Exception as e:
+        await message.reply(f"❌ 답변 생성 중 오류가 발생했습니다: {e}")
+    return
+
+  # ------------------------------------------
+  # 기존 티켓/인증 절차 핸들러
+  # ------------------------------------------
+  state = user_ticket_state.get(message.channel.id)
+
+  # 1. "동의" 입력 시 안내문 출력
+  if message.content.strip() == "동의" and state and not state["agreed"]:
+    state["agreed"] = True
+    embed = discord.Embed(
+        title="개인정보 및 거래 인증 절차 안내",
+        description=(
+            "아래 절차에 따라 인증 정보를 제출해 주세요. (제출 시 반드시 **봇을"
+            " 멘션**하여 보내주세요)"
+        ),
+        color=discord.Color.blue(),
+    )
+    embed.add_field(
+        name="1. 계좌 인증",
+        value=(
+            "ㆍ 은행명 (서로 다른 은행명)\nㆍ 계좌번호 (가상계좌 불가,"
+            " 2개이상)\nㆍ 예금주명\n\n※ 필요 시 본인 명의 확인을 위해 예금주가"
+            " 표시된 화면을 요청할 수 있습니다."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="2. 전화번호 인증",
+        value=(
+            "인증 방법 (전화번호)\n\n**iOS :**\n1 . 설정 앱을 실행합니다.\n2 ."
+            " 검색란에 ‘ 전화 ’ 입력 후 전화 아이콘 클릭.\n3 . 나의 전화번호가"
+            " 보이는 화면을 준비합니다.\n4 . 저와 대화 중인 채팅창이 함께"
+            " 보이도록 화면을 녹화하여 제출해 주세요.\n\n**Android :**\n1 ."
+            " 설정 앱을 실행합니다.\n2 . 휴대전화 정보 또는 휴대전화 정보 →"
+            " 상태 정보로 이동합니다.\n    (기기에 따라 SIM 상태, 내 전화번호"
+            " 메뉴일 수도 있습니다.)\n3 . 전화번호가 보이는 화면을"
+            " 준비합니다.\n4 . 저와 대화 중인 채팅창이 함께 보이도록 화면을"
+            " 녹화하여 제출해 주세요."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="3. 거래 인증",
+        value=(
+            "아래 정보를 사진 또는 링크로 보내주세요.\n\nㆍ 네이버 카페, 옾챗,"
+            " 디코 등 거래 내역이 확인 가능한 링크 또는 사진을 보내주세요\nㆍ 첫"
+            " 거래 날짜가 확인 가능하면 함께 보내주세요\n\n⚠️ **주의사항**\n모두"
+            " 현시각과 다를 시, 인정이 되지 않습니다. 도용, 합성 및 AI 의심이"
+            " 날 경우, 위 방법과 다른 인증 수단을 요청할 수 있으니, 이 점"
+            " 참고해 주시길 바랍니다.\n\n📌 **중요**: 정보를 제출하실 때는 반드시"
+            " **봇을 멘션(@봇)**하고 메시지나 사진을 작성해 주세요!"
+        ),
+        inline=False,
+    )
+
+    if os.path.exists(IMAGE_FILE_NAME):
+      image_file = discord.File(IMAGE_FILE_NAME, filename=IMAGE_FILE_NAME)
+      embed.set_image(url=f"attachment://{IMAGE_FILE_NAME}")
+      await message.channel.send(file=image_file, embed=embed)
+    else:
+      await message.channel.send(embed=embed)
 
     await bot.process_commands(message)
+    return
+
+  # 2. 동의 후 정보 제출 (반드시 봇이 멘션되어 있어야 인식하여 저장)
+  if state and state["agreed"] and not state["awaiting_deposit_confirm"]:
+    if bot.user in message.mentions:
+      files_to_send = []
+      if message.attachments:
+        for attachment in message.attachments:
+          file_data = await attachment.to_file()
+          files_to_send.append(file_data)
+
+      cleaned_content = (
+          message.content.replace(f"<@{bot.user.id}>", "")
+          .replace(f"<@!{bot.user.id}>", "")
+          .strip()
+      )
+
+      if cleaned_content or files_to_send:
+        log_embed = discord.Embed(
+            title="[개인정보 인증 서류 제출]",
+            description=(
+                f"**신청자**: {message.author.mention}"
+                f" ({message.author.id})\n**채널**: {message.channel.mention}"
+            ),
+            color=0x3498DB,
+            timestamp=datetime.now(),
+        )
+        if cleaned_content:
+          log_embed.add_field(
+              name="제출 내용", value=cleaned_content, inline=False
+          )
+
+        await send_log(message.guild, log_embed, files=files_to_send)
+
+        state["awaiting_deposit_confirm"] = True
+        await message.channel.send(
+            f"{message.author.mention} 님, 제출해 주신 개인정보 및 인증 서류 저장이"
+            " 완료되었습니다.\n\n**입금을 진행하시겠습니까? 동의하실 경우 `예`라고"
+            " 입력해 주세요.**"
+        )
+
+    await bot.process_commands(message)
+    return
+
+  # 3. 유저가 "예"라고 입력 시 자동으로 입금 안내 메시지 출력
+  if (
+      message.content.strip() == "예"
+      and state
+      and state["awaiting_deposit_confirm"]
+  ):
+    state["awaiting_deposit_confirm"] = False
+
+    embed = discord.Embed(
+        title="입금 진행 중...",
+        description=(
+            f"{message.author.mention} 님, 계좌 정보를 안내해 드립니다.\n"
+            "아래 계좌로 입금 후 이중창 인증을 완료해 주세요.\n\n"
+            "• **우리은행 `49306531218364` (ㅈㅈㅎ)**\n"
+            "• **금액: 14,000원 (7일)**"
+        ),
+        color=0xF1C40F,
+    )
+    await message.channel.send(embed=embed)
+
+  await bot.process_commands(message)
 
 
 # ==========================================
 # 5. 슬래시 명령어
 # ==========================================
 
-@bot.tree.command(name="모집시작", description="[관리자] 진행자 신청 모집을 시작합니다.")
+
+@bot.tree.command(
+    name="모집시작", description="[관리자] 진행자 신청 모집을 시작합니다."
+)
 @app_commands.checks.has_permissions(administrator=True)
 async def start_recruitment(interaction: discord.Interaction):
-    global is_recruiting
-    is_recruiting = True
-    await interaction.response.send_message("✅ 진행자 신청 모집이 **시작되었습니다**. (티켓 생성 가능)", ephemeral=True)
+  global is_recruiting
+  is_recruiting = True
+  await interaction.response.send_message(
+      "✅ 진행자 신청 모집이 **시작되었습니다**. (티켓 생성 가능)",
+      ephemeral=True,
+  )
 
 
-@bot.tree.command(name="모집종료", description="[관리자] 진행자 신청 모집을 종료합니다.")
+@bot.tree.command(
+    name="모집종료", description="[관리자] 진행자 신청 모집을 종료합니다."
+)
 @app_commands.checks.has_permissions(administrator=True)
 async def stop_recruitment(interaction: discord.Interaction):
-    global is_recruiting
-    is_recruiting = False
-    await interaction.response.send_message("⛔ 진행자 신청 모집이 **종료되었습니다**. (티켓 생성 차단)", ephemeral=True)
+  global is_recruiting
+  is_recruiting = False
+  await interaction.response.send_message(
+      "⛔ 진행자 신청 모집이 **종료되었습니다**. (티켓 생성 차단)",
+      ephemeral=True,
+  )
 
 
-@bot.tree.command(name="메인메뉴생성", description="[관리자] 신청 및 라이센스 등록 메인 버튼 메시지를 생성합니다.")
+@bot.tree.command(
+    name="메인메뉴생성",
+    description="[관리자] 신청 및 라이센스 등록 메인 버튼 메시지를 생성합니다.",
+)
 @app_commands.checks.has_permissions(administrator=True)
 async def make_main(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="디코 / 오픈채팅 진행자 신청 및 등록",
-        description="""판매자 신청 및 라이센스 등록은 아래 버튼을 눌러주세요.
+  embed = discord.Embed(
+      title="디코 / 오픈채팅 진행자 신청 및 등록",
+      description="""판매자 신청 및 라이센스 등록은 아래 버튼을 눌러주세요.
 
 • **진행자 신청**: 티켓 생성 후 안내 절차 진행
 
 • **라이센스 등록**: 발급받은 코드 입력 시 역할 지급 및 만료 시간 적용 (7일)
 -# 장난으로 생성한 경우 제재됩니다.""",
-        color=PASTEL_PINK
-    )
-    await interaction.channel.send(embed=embed, view=MainMenuView())
-    await interaction.response.send_message("메인 메뉴 생성 완료!", ephemeral=True)
+      color=PASTEL_PINK,
+  )
+  await interaction.channel.send(embed=embed, view=MainMenuView())
+  await interaction.response.send_message(
+      "메인 메뉴 생성 완료!", ephemeral=True
+  )
 
 
-@bot.tree.command(name="보내기", description="[관리자] 봇이 대신 메시지를 작성하여 전송합니다.")
+@bot.tree.command(
+    name="보내기", description="[관리자] 봇이 대신 메시지를 작성하여 전송합니다."
+)
 @app_commands.describe(
     메시지="봇이 대신 전송할 메시지 내용을 입력하세요.",
-    채널="메시지를 전송할 채널을 선택하세요. (미선택 시 현재 채널)"
+    채널="메시지를 전송할 채널을 선택하세요. (미선택 시 현재 채널)",
 )
 @app_commands.checks.has_permissions(administrator=True)
 async def send_message_as_bot(
-    interaction: discord.Interaction, 
-    메시지: str, 
-    채널: discord.TextChannel = None
+    interaction: discord.Interaction,
+    메시지: str,
+    채널: discord.TextChannel = None,
 ):
-    target_channel = 채널 or interaction.channel
+  target_channel = 채널 or interaction.channel
 
-    try:
-        await target_channel.send(메시지)
-        await interaction.response.send_message(
-            f"✅ {target_channel.mention} 채널로 메시지를 전송했습니다.", 
-            ephemeral=True
-        )
-    except discord.Forbidden:
-        await interaction.response.send_message(
-            "❌ 해당 채널에 메시지를 전송할 권한이 없습니다.", 
-            ephemeral=True
-        )
-    except Exception as e:
-        await interaction.response.send_message(
-            f"❌ 메시지 전송 실패: {e}", 
-            ephemeral=True
-        )
+  try:
+    await target_channel.send(메시지)
+    await interaction.response.send_message(
+        f"✅ {target_channel.mention} 채널로 메시지를 전송했습니다.",
+        ephemeral=True,
+    )
+  except discord.Forbidden:
+    await interaction.response.send_message(
+        "❌ 해당 채널에 메시지를 전송할 권한이 없습니다.", ephemeral=True
+    )
+  except Exception as e:
+    await interaction.response.send_message(
+        f"❌ 메시지 전송 실패: {e}", ephemeral=True
+    )
 
 
 @bot.event
 async def on_ready():
-    print(f"로그인 성공: {bot.user.name}")
-    bot.add_view(MainMenuView())
-    check_expired_licenses.start()
-    await bot.tree.sync()
+  print(f"로그인 성공: {bot.user.name}")
+  bot.add_view(MainMenuView())
+  check_expired_licenses.start()
+  await bot.tree.sync()
 
 
 if TOKEN:
-    bot.run(TOKEN)
+  bot.run(TOKEN)
 else:
-    print("오류: DISCORD_TOKEN 환경 변수가 설정되지 않았습니다.")
+  print("오류: DISCORD_TOKEN 환경 변수가 설정되지 않았습니다.")
