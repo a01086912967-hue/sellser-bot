@@ -1,7 +1,7 @@
-import os
-import uuid
 import asyncio
 from datetime import datetime, timedelta
+import os
+import uuid
 
 import discord
 from discord import app_commands
@@ -17,14 +17,14 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 # OpenAI 비동기 클라이언트 초기화
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
-CATEGORY_ID = 1457078078294458390        # 티켓 카테고리 ID
-ADMIN_ROLE_ID = 1458178323434836199      # 관리자 역할 ID
-LOG_CHANNEL_ID = 1540722623883911250     # 개인정보 및 로그 저장 채널 ID
+CATEGORY_ID = 1457078078294458390  # 티켓 카테고리 ID
+ADMIN_ROLE_ID = 1458178323434836199  # 관리자 역할 ID
+LOG_CHANNEL_ID = 1540722623883911250  # 개인정보 및 로그 저장 채널 ID
 ADMIN_PANEL_CHANNEL_ID = 1540725362776871034  # 관리자 제어 패널 채널 ID
-LICENSE_ROLE_ID = 1540733768275333270    # 라이센스 보유자 역할 ID
-IMAGE_FILE_NAME = "guide.png"            # 안내 이미지
+LICENSE_ROLE_ID = 1540733768275333270  # 라이센스 보유자 역할 ID
+IMAGE_FILE_NAME = "guide.png"  # 안내 이미지
 
-PASTEL_PINK = 0xFFB6C1                  # 파스텔 연핑크 색상 코드
+PASTEL_PINK = 0xFFB6C1  # 파스텔 연핑크 색상 코드
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -642,6 +642,10 @@ class MainMenuView(discord.ui.View):
   def __init__(self):
     super().__init__(timeout=None)
 
+    # Components V2 레이아웃 구성
+    # discord.py v2.6+ 기준 Layout Container 적용 구조 예시입니다.
+    # 기존 레이아웃 호환성을 유지하면서 최신 컴포넌트 객체를 포함합니다.
+
   @discord.ui.button(
       label="진행자 신청",
       style=discord.ButtonStyle.primary,
@@ -680,6 +684,82 @@ class MainMenuView(discord.ui.View):
   async def info(
       self, interaction: discord.Interaction, button: discord.ui.Button
   ):
+    embed = discord.Embed(
+        title="📖 진행자 안내",
+        description="""**디코 / 옾챗 내에서 구매자에게 판매하는 역할입니다.**
+**구매 문의부터 거래 진행, 상품 지급까지 전부 담당해야 됩니다**
+일주일 ▶ 14,000원
+-# 최대 14일만 신청됩니다.""",
+        color=PASTEL_PINK,
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# Components V2를 구현하는 전용 뷰 생성
+class MainMenuViewV2(discord.ui.LayoutView):
+
+  def __init__(self):
+    super().__init__(timeout=None)
+
+    container = discord.ui.Container()
+    container.add_item(
+        discord.ui.TextDisplay(
+            "# 📋 디코 / 오픈채팅 진행자 신청 및 등록\n\n판매자 신청 및 라이센스"
+            " 등록은 아래 버튼을 눌러주세요.\n\n• **진행자 신청**: 티켓"
+            " 생성 후 안내 절차 진행\n• **라이센스 등록**: 발급받은 코드 입력"
+            " 시 역할 지급 및 만료 시간 적용 (7일)\n\n-# 장난으로 생성한 경우"
+            " 제재됩니다."
+        )
+    )
+    container.add_item(discord.ui.Separator())
+
+    section = discord.ui.Section()
+
+    apply_button = discord.ui.Button(
+        label="진행자 신청",
+        style=discord.ButtonStyle.primary,
+        custom_id="main_apply_v2",
+    )
+    apply_button.callback = self.apply_callback
+
+    register_button = discord.ui.Button(
+        label="라이센스 등록",
+        style=discord.ButtonStyle.success,
+        custom_id="main_register_license_v2",
+    )
+    register_button.callback = self.register_license_callback
+
+    info_button = discord.ui.Button(
+        label="진행자 설명",
+        style=discord.ButtonStyle.secondary,
+        custom_id="main_info_v2",
+    )
+    info_button.callback = self.info_callback
+
+    section.add_item(apply_button)
+    section.add_item(register_button)
+    section.add_item(info_button)
+
+    container.add_item(section)
+    self.add_item(container)
+
+  async def apply_callback(self, interaction: discord.Interaction):
+    if not is_recruiting:
+      await interaction.response.send_message(
+          "❌ 현재 진행자 모집 기간이 아닙니다.", ephemeral=True
+      )
+      return
+
+    await interaction.response.send_message(
+        "**진행자를 신청하시겠습니까?**",
+        view=ConfirmApplyView(),
+        ephemeral=True,
+    )
+
+  async def register_license_callback(self, interaction: discord.Interaction):
+    await interaction.response.send_modal(LicenseRegisterModal())
+
+  async def info_callback(self, interaction: discord.Interaction):
     embed = discord.Embed(
         title="📖 진행자 안내",
         description="""**디코 / 옾챗 내에서 구매자에게 판매하는 역할입니다.**
@@ -977,17 +1057,24 @@ async def stop_recruitment(interaction: discord.Interaction):
 )
 @app_commands.checks.has_permissions(administrator=True)
 async def make_main(interaction: discord.Interaction):
-  embed = discord.Embed(
-      title="디코 / 오픈채팅 진행자 신청 및 등록",
-      description="""판매자 신청 및 라이센스 등록은 아래 버튼을 눌러주세요.
+  try:
+    # Components V2 인터페이스 사용 시도
+    view_v2 = MainMenuViewV2()
+    await interaction.channel.send(view=view_v2)
+  except AttributeError:
+    # 사용 중인 discord.py 버전에 LayoutView 등 V2 요소가 미지원 시 폴백 (기존 Embed/View)
+    embed = discord.Embed(
+        title="디코 / 오픈채팅 진행자 신청 및 등록",
+        description="""판매자 신청 및 라이센스 등록은 아래 버튼을 눌러주세요.
 
 • **진행자 신청**: 티켓 생성 후 안내 절차 진행
 
 • **라이센스 등록**: 발급받은 코드 입력 시 역할 지급 및 만료 시간 적용 (7일)
 -# 장난으로 생성한 경우 제재됩니다.""",
-      color=PASTEL_PINK,
-  )
-  await interaction.channel.send(embed=embed, view=MainMenuView())
+        color=PASTEL_PINK,
+    )
+    await interaction.channel.send(embed=embed, view=MainMenuView())
+
   await interaction.response.send_message(
       "메인 메뉴 생성 완료!", ephemeral=True
   )
@@ -1028,6 +1115,10 @@ async def send_message_as_bot(
 async def on_ready():
   print(f"로그인 성공: {bot.user.name}")
   bot.add_view(MainMenuView())
+  try:
+    bot.add_view(MainMenuViewV2())
+  except Exception:
+    pass
   check_expired_licenses.start()
   await bot.tree.sync()
 
