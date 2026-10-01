@@ -196,7 +196,7 @@ class HoldReasonModal(discord.ui.Modal, title="신청 보류 사유 입력"):
         await send_log(interaction.guild, log_embed)
 
 
-# [관리자 전용 제어 패널 (버튼 이모지 전부 제거)]
+# [관리자 전용 제어 패널]
 class AdminControlView(discord.ui.View):
     def __init__(self, applicant: discord.Member, ticket_channel: discord.TextChannel):
         super().__init__(timeout=None)
@@ -501,7 +501,7 @@ async def on_message(message):
         state["agreed"] = True
         embed = discord.Embed(
             title="개인정보 및 거래 인증 절차 안내",
-            description="아래 절차에 따라 인증 정보를 제출해 주세요.",
+            description="아래 절차에 따라 인증 정보를 제출해 주세요. (제출 시 반드시 **봇을 멘션**하여 보내주세요)",
             color=discord.Color.blue()
         )
         embed.add_field(
@@ -539,7 +539,8 @@ async def on_message(message):
                 "ㆍ 네이버 카페, 옾챗, 디코 등 거래 내역이 확인 가능한 링크 또는 사진을 보내주세요\n"
                 "ㆍ 첫 거래 날짜가 확인 가능하면 함께 보내주세요\n\n"
                 "⚠️ **주의사항**\n"
-                "모두 현시각과 다를 시, 인정이 되지 않습니다. 도용, 합성 및 AI 의심이 날 경우, 위 방법과 다른 인증 수단을 요청할 수 있으니, 이 점 참고해 주시길 바랍니다."
+                "모두 현시각과 다를 시, 인정이 되지 않습니다. 도용, 합성 및 AI 의심이 날 경우, 위 방법과 다른 인증 수단을 요청할 수 있으니, 이 점 참고해 주시길 바랍니다.\n\n"
+                "📌 **중요**: 정보를 제출하실 때는 반드시 **봇을 멘션(@봇)**하고 메시지나 사진을 작성해 주세요!"
             ),
             inline=False
         )
@@ -554,33 +555,38 @@ async def on_message(message):
         await bot.process_commands(message)
         return
 
-    # 2. 동의 후 제출되는 정보(사진, 영상, 텍스트)를 지정된 채널(LOG_CHANNEL_ID)로 자동 복사 저장
+    # 2. 동의 후 정보 제출 (반드시 봇이 멘션되어 있어야 인식하여 저장)
     if state and state["agreed"] and not state["awaiting_deposit_confirm"]:
-        # 첨부파일 및 메시지 저장
-        files_to_send = []
-        if message.attachments:
-            for attachment in message.attachments:
-                file_data = await attachment.to_file()
-                files_to_send.append(file_data)
+        # 봇이 멘션되었는지 확인
+        if bot.user in message.mentions:
+            files_to_send = []
+            if message.attachments:
+                for attachment in message.attachments:
+                    file_data = await attachment.to_file()
+                    files_to_send.append(file_data)
 
-        if message.content or files_to_send:
-            log_embed = discord.Embed(
-                title="[개인정보 인증 서류 제출]",
-                description=f"**신청자**: {message.author.mention} ({message.author.id})\n**채널**: {message.channel.mention}",
-                color=0x3498db,
-                timestamp=datetime.now()
-            )
-            if message.content:
-                log_embed.add_field(name="제출 내용", value=message.content, inline=False)
+            # 멘션 문자열 제거한 텍스트 가공
+            cleaned_content = message.content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip()
 
-            await send_log(message.guild, log_embed, files=files_to_send)
+            if cleaned_content or files_to_send:
+                log_embed = discord.Embed(
+                    title="[개인정보 인증 서류 제출]",
+                    description=f"**신청자**: {message.author.mention} ({message.author.id})\n**채널**: {message.channel.mention}",
+                    color=0x3498db,
+                    timestamp=datetime.now()
+                )
+                if cleaned_content:
+                    log_embed.add_field(name="제출 내용", value=cleaned_content, inline=False)
 
-            # 제출 완료 및 입금 진행 질문 메시지 전송
-            state["awaiting_deposit_confirm"] = True
-            await message.channel.send(
-                f"{message.author.mention} 님, 제출해 주신 개인정보 및 인증 서류 저장이 완료되었습니다.\n\n"
-                f"**입금을 진행하시겠습니까? 동의하실 경우 `예`라고 입력해 주세요.**"
-            )
+                # 지정된 채널(1540722623883911250)로 저장
+                await send_log(message.guild, log_embed, files=files_to_send)
+
+                # 제출 완료 및 입금 진행 질문 메시지 전송
+                state["awaiting_deposit_confirm"] = True
+                await message.channel.send(
+                    f"{message.author.mention} 님, 제출해 주신 개인정보 및 인증 서류 저장이 완료되었습니다.\n\n"
+                    f"**입금을 진행하시겠습니까? 동의하실 경우 `예`라고 입력해 주세요.**"
+                )
 
         await bot.process_commands(message)
         return
