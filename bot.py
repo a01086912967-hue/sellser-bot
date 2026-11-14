@@ -623,9 +623,51 @@ async def toby_knowledge(guild: discord.Guild) -> str:
   return _toby_knowledge["text"]
 
 
-TOBY_MEMORY_TURNS = 4  # 사람마다 최근 대화 몇 번까지 기억할지
-TOBY_MEMORY_SEC = 600  # 10분 지나면 대화 기억 리셋
-toby_history = {}
+# ---------- 토비 기억 (파일에 저장, 재시작해도 유지) ----------
+TOBY_MEMORY_TURNS = 25  # 사람마다 최근 대화 몇 번까지 기억할지 (질문+답변 = 1번)
+TOBY_MEMORY_FILE = os.path.join(DATA_DIR, "toby_memory.json")
+
+
+def _load_toby_memory() -> dict:
+  try:
+    with open(TOBY_MEMORY_FILE, "r", encoding="utf-8") as f:
+      data = json.load(f)
+    return {
+        "users": data.get("users", {}),
+        "msg_ids": [int(x) for x in data.get("msg_ids", [])][-2000:],
+    }
+  except (FileNotFoundError, ValueError, OSError):
+    return {"users": {}, "msg_ids": []}
+
+
+toby_memory = _load_toby_memory()
+toby_msg_ids = set(toby_memory["msg_ids"])  # 토비가 보낸 답장 (여기에 답장하면 토비야 없이도 대답)
+
+
+def save_toby_memory():
+  try:
+    toby_memory["msg_ids"] = toby_memory["msg_ids"][-2000:]
+    tmp = TOBY_MEMORY_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+      json.dump(toby_memory, f, ensure_ascii=False)
+    os.replace(tmp, TOBY_MEMORY_FILE)
+  except OSError as e:
+    print(f"[토비] 기억 저장 실패: {e}")
+
+
+def toby_history_of(user_id: int) -> list:
+  return toby_memory["users"].get(str(user_id), [])
+
+
+def toby_remember(user_id: int, question: str, answer: str, reply_msg_id: int):
+  now = datetime.now().strftime("%Y-%m-%d %H:%M")
+  hist = toby_history_of(user_id)
+  hist.append({"role": "user", "content": question[:500], "at": now})
+  hist.append({"role": "assistant", "content": answer[:500], "at": now})
+  toby_memory["users"][str(user_id)] = hist[-TOBY_MEMORY_TURNS * 2:]
+  toby_memory["msg_ids"].append(reply_msg_id)
+  toby_msg_ids.add(reply_msg_id)
+  save_toby_memory()
 
 # AI가 습관처럼 붙이는 말 정리
 _TOBY_CUT = [
@@ -1823,11 +1865,20 @@ async def on_message(message):
     return
  
   # ---------- 토비야 (AI 마스코트, 반말) ----------
-  if message.content.startswith("토비야"):
-    user_prompt = message.content[3:].strip(" ,.!?~")
+  # "토비야 ~" 로 부르거나, 토비가 한 말에 답장하면 대답해요
+  replied_to_toby = bool(
+      message.reference and message.reference.message_id in toby_msg_ids
+  )
+  if message.content.startswith("토비야") or replied_to_toby:
+    user_prompt = message.content
+    if user_prompt.startswith("토비야"):
+      user_prompt = user_prompt[3:]
+    user_prompt = user_prompt.strip(" ,.!?~")
 
     if not user_prompt:
-      await message.reply(random.choice(TOBY_EMPTY_REPLIES))
+      sent = await message.reply(random.choice(TOBY_EMPTY_REPLIES))
+      toby_msg_ids.add(sent.id)
+      toby_memory["msg_ids"].append(sent.id)
       return
 
     if not openai_client:
@@ -1836,17 +1887,20 @@ async def on_message(message):
 
     async with message.channel.typing():
       try:
-        key = (message.channel.id, message.author.id)
-        history = [
-            h for h in toby_history.get(key, [])
-            if (datetime.now() - h["at"]).total_seconds() < TOBY_MEMORY_SEC
-        ]
+        history = toby_history_of(message.author.id)
         knowledge = await toby_knowledge(message.guild)
         system = TOBY_SYSTEM
         if knowledge:
           system += (
               "\n\n[공지/규칙 내용 - 서버 채널에 실제로 올라와 있는 글]\n"
               + knowledge
+          )
+        if history:
+          system += (
+              f"\n\n[기억] 아래 이어지는 대화는 {message.author.display_name}(이)랑"
+              f" 예전에 나눈 대화야 (처음: {history[0].get('at', '?')}). 예전에 물어본"
+              " 거 다시 물어보면 그때 얘기 기억해서 이어서 말해줘. 지금은"
+              f" {datetime.now().strftime('%Y-%m-%d %H:%M')}."
           )
         messages = [{"role": "system", "content": system}]
         for q, a in TOBY_EXAMPLES:
@@ -1865,11 +1919,10 @@ async def on_message(message):
         )
         ai_reply = clean_toby_reply(response.choices[0].message.content)
 
-        history.append({"role": "user", "content": user_prompt, "at": datetime.now()})
-        history.append({"role": "assistant", "content": ai_reply, "at": datetime.now()})
-        toby_history[key] = history[-TOBY_MEMORY_TURNS * 2:]
-
-        await message.reply(ai_reply, allowed_mentions=discord.AllowedMentions.none())
+        sent = await message.reply(
+            ai_reply, allowed_mentions=discord.AllowedMentions.none()
+        )
+        toby_remember(message.author.id, user_prompt, ai_reply, sent.id)
       except Exception as e:
         print(f"토비 답변 오류: {e}")
         await message.reply("어 잠깐 렉 걸렸나봐 ㅋㅋ 다시 한 번만 말해줘")
