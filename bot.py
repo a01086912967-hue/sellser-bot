@@ -10,6 +10,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 from openai import AsyncOpenAI
+from PIL import Image, ImageDraw, ImageFont
  
 # ==========================================
 # 1. 설정 및 ID 상수
@@ -100,12 +101,13 @@ prices = load_prices()
 
 # ==========================================
 # 1-1-2. 진행자 자리 설정 (관리자가 /자리설정 으로 변경, 파일에 저장)
+#   표시 방식: 찬 자리/전체 자리  →  0/5 = 5자리 남음, 5/5 = 마감
 # ==========================================
 SLOT_FILE = os.getenv("SLOT_FILE", "slots.json")
 
 DEFAULT_SLOTS = {
-    "discord": {"total": 4, "remaining": 4},
-    "openchat": {"total": 4, "remaining": 4},
+    "discord": {"total": 5, "used": 0},
+    "openchat": {"total": 5, "used": 0},
 }
 
 
@@ -115,9 +117,13 @@ def load_slots() -> dict:
     with open(SLOT_FILE, "r", encoding="utf-8") as f:
       saved = json.load(f)
     for media in data:
-      for key in ("total", "remaining"):
-        if key in saved.get(media, {}):
-          data[media][key] = int(saved[media][key])
+      s = saved.get(media, {})
+      if "total" in s:
+        data[media]["total"] = int(s["total"])
+      if "used" in s:
+        data[media]["used"] = int(s["used"])
+      elif "remaining" in s:  # 예전 저장 형식(남은 자리) 변환
+        data[media]["used"] = data[media]["total"] - int(s["remaining"])
   except (FileNotFoundError, ValueError, OSError):
     pass
   return data
@@ -134,29 +140,164 @@ def save_slots():
 slots = load_slots()
 
 
-def change_remaining(media: str, delta: int):
-  """남은 자리 증감 (0 ~ 전체 자리 범위로 고정)"""
+def change_used(media: str, delta: int):
+  """찬 자리 증감 (0 ~ 전체 자리 범위로 고정)"""
   s = slots[media]
-  s["remaining"] = max(0, min(s["total"], s["remaining"] + delta))
+  s["used"] = max(0, min(s["total"], s["used"] + delta))
   save_slots()
 
 
 def slot_text(media: str) -> str:
   s = slots[media]
-  return f"{s['remaining']}/{s['total']}"
+  return f"{s['used']}/{s['total']}"
 
 
-def build_slot_embed() -> discord.Embed:
-  embed = discord.Embed(title="현재 남은 진행자 자리", color=PASTEL_PINK)
-  for media in ("discord", "openchat"):
+def slot_left(media: str) -> int:
+  s = slots[media]
+  return max(0, s["total"] - s["used"])
+
+
+# ---------- 진행자 현황 이미지 카드 ----------
+# 한글 폰트가 필요합니다. 봇 폴더에 font.ttf (예: 나눔고딕 Bold, Pretendard Bold)를
+# 넣거나 FONT_FILE 환경 변수로 경로를 지정하세요.
+FONT_CANDIDATES = [
+    os.getenv("FONT_FILE", ""),
+    "font.ttf",
+    "font.otf",
+    "Pretendard-Bold.otf",
+    "fonts/font.ttf",
+    "NanumGothicBold.ttf",
+    "Pretendard-Bold.ttf",
+    "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+]
+
+
+def _font(size: int):
+  for path in FONT_CANDIDATES:
+    if path and os.path.exists(path):
+      try:
+        # Noto CJK .ttc 는 index 1 이 한국어(KR)
+        idx = 1 if path.endswith(".ttc") else 0
+        return ImageFont.truetype(path, size, index=idx)
+      except OSError:
+        continue
+  return ImageFont.load_default(size)
+
+
+def _rounded(draw, box, r, fill, outline=None, width=1):
+  draw.rounded_rectangle(box, radius=r, fill=fill, outline=outline, width=width)
+
+
+def _center_text(draw, cx, y, text, font, fill):
+  w = draw.textlength(text, font=font)
+  draw.text((cx - w / 2, y), text, font=font, fill=fill)
+
+
+def render_slot_card(guild_name: str) -> io.BytesIO:
+  W, H = 1000, 520
+  img = Image.new("RGB", (W, H), "#FFF5F8")
+  draw = ImageDraw.Draw(img)
+
+  # 파스텔 그라데이션 배경
+  top, bottom = (255, 228, 238), (232, 236, 255)
+  for y in range(H):
+    t = y / H
+    c = tuple(int(top[i] + (bottom[i] - top[i]) * t) for i in range(3))
+    draw.line([(0, y), (W, y)], fill=c)
+
+  # 장식 원
+  deco = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+  dd = ImageDraw.Draw(deco)
+  dd.ellipse((-120, -140, 260, 220), fill=(255, 255, 255, 90))
+  dd.ellipse((780, 330, 1120, 650), fill=(255, 255, 255, 90))
+  dd.ellipse((860, -60, 980, 60), fill=(255, 182, 193, 70))
+  img.paste(deco, (0, 0), deco)
+  draw = ImageDraw.Draw(img)
+
+  f_title = _font(44)
+  f_sub = _font(22)
+  f_label = _font(30)
+  f_big = _font(84)
+  f_small = _font(22)
+  f_pill = _font(22)
+
+  ink = (74, 60, 80)
+  soft = (140, 120, 145)
+
+  _center_text(draw, W / 2, 38, "진행자 현황", f_title, ink)
+  _center_text(
+      draw, W / 2, 98, "현재 모집 중인 진행자 자리를 확인하세요", f_sub, soft
+  )
+
+  cards = [("discord", "디스코드 진행자", (114, 137, 218)),
+           ("openchat", "오픈채팅 진행자", (254, 200, 60))]
+  card_w, card_h, gap = 400, 290, 60
+  x0 = (W - (card_w * 2 + gap)) / 2
+  y0 = 160
+
+  for i, (media, label, accent) in enumerate(cards):
     s = slots[media]
-    status = "🔴 마감" if s["remaining"] <= 0 else "🟢 모집 가능"
-    embed.add_field(
-        name=f"{MEDIA_LABEL[media]} 진행자",
-        value=f"**{slot_text(media)}**  {status}",
-        inline=True,
-    )
-  return embed
+    used, total = s["used"], s["total"]
+    left = slot_left(media)
+    full = left <= 0
+
+    x = x0 + i * (card_w + gap)
+    cx = x + card_w / 2
+
+    # 카드 그림자 + 본체
+    _rounded(draw, (x + 4, y0 + 6, x + card_w + 4, y0 + card_h + 6), 28,
+             (235, 210, 222))
+    _rounded(draw, (x, y0, x + card_w, y0 + card_h), 28, (255, 255, 255))
+    # 상단 포인트 바
+    _rounded(draw, (x + 30, y0 + 22, x + 90, y0 + 30), 4, accent)
+
+    draw.text((x + 30, y0 + 44), label, font=f_label, fill=ink)
+
+    # 상태 뱃지
+    pill_text = "마감" if full else "모집 중"
+    pill_fill = (255, 205, 210) if full else (200, 240, 215)
+    pill_ink = (200, 60, 80) if full else (40, 140, 80)
+    pw = draw.textlength(pill_text, font=f_pill) + 32
+    _rounded(draw, (x + card_w - 30 - pw, y0 + 46, x + card_w - 30, y0 + 84),
+             19, pill_fill)
+    draw.text((x + card_w - 30 - pw + 16, y0 + 52), pill_text, font=f_pill,
+              fill=pill_ink)
+
+    # 큰 숫자 0/5
+    _center_text(draw, cx, y0 + 90, f"{used}/{total}", f_big, ink)
+
+    # 자리 칸 (찬 자리 = 색칠)
+    bar_y = y0 + 222
+    bar_x1, bar_x2 = x + 34, x + card_w - 34
+    if total > 0:
+      n = min(total, 20)
+      cell_gap = 8
+      cell_w = (bar_x2 - bar_x1 - cell_gap * (n - 1)) / n
+      filled = round(used / total * n)
+      for k in range(n):
+        cx1 = bar_x1 + k * (cell_w + cell_gap)
+        color = accent if k < filled else (238, 232, 240)
+        _rounded(draw, (cx1, bar_y, cx1 + cell_w, bar_y + 16), 8, color)
+
+    sub = "자리가 모두 찼어요" if full else f"남은 자리 {left}개"
+    _center_text(draw, cx, bar_y + 30, sub, f_small,
+                 (200, 60, 80) if full else soft)
+
+  now = datetime.now().strftime("%Y.%m.%d %H:%M")
+  _center_text(draw, W / 2, H - 46, f"{guild_name}  ·  {now} 기준", f_small,
+               soft)
+
+  buf = io.BytesIO()
+  img.save(buf, "PNG")
+  buf.seek(0)
+  return buf
+
+
+async def slot_card_file(guild_name: str) -> discord.File:
+  buf = await asyncio.to_thread(render_slot_card, guild_name)
+  return discord.File(buf, filename="slots.png")
 
  
 def get_prices(media: str) -> dict:
@@ -253,7 +394,7 @@ def build_info_text(media: str) -> str:
   return (
       f"{INFO_HEAD[media]}\n\n\n"
       f"୨୧ 진행자 비용\n{price_lines(media)}\n\n"
-      f"୨୧ 현재 남은 진행자 **{slot_text(media)}**\n\n"
+      f"୨୧ 현재 진행자 **{slot_text(media)}** (남은 자리 {slot_left(media)}개)\n\n"
       "-# 최대 14일까지만 신청됩니다."
   )
  
@@ -953,12 +1094,12 @@ class AdminControlView(discord.ui.View):
           " 전송에 실패했습니다."
       )
  
-    # 진행자 자리 1개 차감
-    change_remaining(media, -1)
+    # 진행자 자리 1개 채움
+    change_used(media, +1)
 
     await interaction.response.send_message(
         f"입금 승인 및 {days}일 라이센스 발급을 완료했습니다.\n"
-        f"{MEDIA_LABEL[media]} 남은 자리: **{slot_text(media)}**",
+        f"{MEDIA_LABEL[media]} 진행자: **{slot_text(media)}** (남은 자리 {slot_left(media)}개)",
         ephemeral=True,
     )
  
@@ -1344,9 +1485,9 @@ async def check_expired_licenses():
         )
         await send_log(guild, log_embed)
  
-    # 만료되면 진행자 자리 1개 복구
+    # 만료되면 진행자 자리 1개 비움
     if info.get("media") in slots:
-      change_remaining(info["media"], +1)
+      change_used(info["media"], -1)
 
     del user_licenses[user_id]
  
@@ -1767,20 +1908,22 @@ async def show_price(interaction: discord.Interaction):
  
  
 @bot.tree.command(
-    name="진행자조회", description="현재 남은 진행자 자리를 확인합니다."
+    name="진행자조회", description="현재 진행자 자리 현황을 확인합니다."
 )
 async def check_slots(interaction: discord.Interaction):
-  await interaction.response.send_message(embed=build_slot_embed())
+  await interaction.response.defer()
+  file = await slot_card_file(interaction.guild.name)
+  await interaction.followup.send(file=file)
 
 
 @bot.tree.command(
     name="자리설정",
-    description="[관리자] 매체별 진행자 전체 자리 / 남은 자리를 설정합니다.",
+    description="[관리자] 매체별 진행자 전체 자리 / 현재 찬 자리를 설정합니다.",
 )
 @app_commands.describe(
     매체="자리를 설정할 매체",
-    전체자리="전체 진행자 자리 수 (예: 4)",
-    남은자리="현재 남은 자리 수 (비우면 전체자리와 같게 설정)",
+    전체자리="전체 진행자 자리 수 (예: 5)",
+    현재인원="현재 찬 자리 수 (비우면 기존 값 유지, 0이면 전부 비어 있음)",
 )
 @app_commands.choices(
     매체=[
@@ -1793,15 +1936,18 @@ async def set_slots(
     interaction: discord.Interaction,
     매체: app_commands.Choice[str],
     전체자리: app_commands.Range[int, 0, 1000],
-    남은자리: app_commands.Range[int, 0, 1000] = None,
+    현재인원: app_commands.Range[int, 0, 1000] = None,
 ):
-  remaining = 전체자리 if 남은자리 is None else min(남은자리, 전체자리)
-  slots[매체.value] = {"total": int(전체자리), "remaining": int(remaining)}
+  used = slots[매체.value]["used"] if 현재인원 is None else 현재인원
+  slots[매체.value] = {"total": int(전체자리), "used": int(min(used, 전체자리))}
   save_slots()
-  await interaction.response.send_message(
+  await interaction.response.defer(ephemeral=True)
+  file = await slot_card_file(interaction.guild.name)
+  await interaction.followup.send(
       f"✅ **{매체.name} 진행자** 자리를 **{slot_text(매체.value)}** 로"
-      " 설정했습니다.\n-# 입금 승인 시 남은 자리 -1, 라이센스 만료 시 +1 자동 반영",
-      embed=build_slot_embed(),
+      f" 설정했습니다. (남은 자리 {slot_left(매체.value)}개)\n"
+      "-# 입금 승인 시 +1, 라이센스 만료 시 -1 자동 반영",
+      file=file,
       ephemeral=True,
   )
 
