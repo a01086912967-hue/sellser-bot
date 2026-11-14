@@ -96,7 +96,68 @@ def save_prices():
  
  
 prices = load_prices()
- 
+
+
+# ==========================================
+# 1-1-2. 진행자 자리 설정 (관리자가 /자리설정 으로 변경, 파일에 저장)
+# ==========================================
+SLOT_FILE = os.getenv("SLOT_FILE", "slots.json")
+
+DEFAULT_SLOTS = {
+    "discord": {"total": 4, "remaining": 4},
+    "openchat": {"total": 4, "remaining": 4},
+}
+
+
+def load_slots() -> dict:
+  data = {m: dict(v) for m, v in DEFAULT_SLOTS.items()}
+  try:
+    with open(SLOT_FILE, "r", encoding="utf-8") as f:
+      saved = json.load(f)
+    for media in data:
+      for key in ("total", "remaining"):
+        if key in saved.get(media, {}):
+          data[media][key] = int(saved[media][key])
+  except (FileNotFoundError, ValueError, OSError):
+    pass
+  return data
+
+
+def save_slots():
+  try:
+    with open(SLOT_FILE, "w", encoding="utf-8") as f:
+      json.dump(slots, f, ensure_ascii=False, indent=2)
+  except OSError as e:
+    print(f"자리 저장 실패: {e}")
+
+
+slots = load_slots()
+
+
+def change_remaining(media: str, delta: int):
+  """남은 자리 증감 (0 ~ 전체 자리 범위로 고정)"""
+  s = slots[media]
+  s["remaining"] = max(0, min(s["total"], s["remaining"] + delta))
+  save_slots()
+
+
+def slot_text(media: str) -> str:
+  s = slots[media]
+  return f"{s['remaining']}/{s['total']}"
+
+
+def build_slot_embed() -> discord.Embed:
+  embed = discord.Embed(title="현재 남은 진행자 자리", color=PASTEL_PINK)
+  for media in ("discord", "openchat"):
+    s = slots[media]
+    status = "🔴 마감" if s["remaining"] <= 0 else "🟢 모집 가능"
+    embed.add_field(
+        name=f"{MEDIA_LABEL[media]} 진행자",
+        value=f"**{slot_text(media)}**  {status}",
+        inline=True,
+    )
+  return embed
+
  
 def get_prices(media: str) -> dict:
   """{3: 5000, 7: 10000, 14: 20000} 형태로 반환"""
@@ -192,6 +253,7 @@ def build_info_text(media: str) -> str:
   return (
       f"{INFO_HEAD[media]}\n\n\n"
       f"୨୧ 진행자 비용\n{price_lines(media)}\n\n"
+      f"୨୧ 현재 남은 진행자 **{slot_text(media)}**\n\n"
       "-# 최대 14일까지만 신청됩니다."
   )
  
@@ -403,6 +465,7 @@ class LicenseRegisterModal(discord.ui.Modal, title="라이센스 코드 등록")
     lic_info["expires_at"] = expire_time
  
     user_licenses[interaction.user.id] = {
+        "media": lic_info.get("media"),
         "guild_id": interaction.guild.id,
         "code": code,
         "expires_at": expire_time,
@@ -821,6 +884,7 @@ class AdminControlView(discord.ui.View):
     license_code = f"KEY-{uuid.uuid4().hex[:12].upper()}"
     license_db[license_code] = {
         "days": days,
+        "media": media,
         "used": False,
         "user_id": None,
         "expires_at": None,
@@ -889,8 +953,13 @@ class AdminControlView(discord.ui.View):
           " 전송에 실패했습니다."
       )
  
+    # 진행자 자리 1개 차감
+    change_remaining(media, -1)
+
     await interaction.response.send_message(
-        f"입금 승인 및 {days}일 라이센스 발급을 완료했습니다.", ephemeral=True
+        f"입금 승인 및 {days}일 라이센스 발급을 완료했습니다.\n"
+        f"{MEDIA_LABEL[media]} 남은 자리: **{slot_text(media)}**",
+        ephemeral=True,
     )
  
     log_embed = discord.Embed(
@@ -1275,6 +1344,10 @@ async def check_expired_licenses():
         )
         await send_log(guild, log_embed)
  
+    # 만료되면 진행자 자리 1개 복구
+    if info.get("media") in slots:
+      change_remaining(info["media"], +1)
+
     del user_licenses[user_id]
  
  
@@ -1694,6 +1767,46 @@ async def show_price(interaction: discord.Interaction):
  
  
 @bot.tree.command(
+    name="진행자조회", description="현재 남은 진행자 자리를 확인합니다."
+)
+async def check_slots(interaction: discord.Interaction):
+  await interaction.response.send_message(embed=build_slot_embed())
+
+
+@bot.tree.command(
+    name="자리설정",
+    description="[관리자] 매체별 진행자 전체 자리 / 남은 자리를 설정합니다.",
+)
+@app_commands.describe(
+    매체="자리를 설정할 매체",
+    전체자리="전체 진행자 자리 수 (예: 4)",
+    남은자리="현재 남은 자리 수 (비우면 전체자리와 같게 설정)",
+)
+@app_commands.choices(
+    매체=[
+        app_commands.Choice(name="디스코드", value="discord"),
+        app_commands.Choice(name="오픈채팅", value="openchat"),
+    ],
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def set_slots(
+    interaction: discord.Interaction,
+    매체: app_commands.Choice[str],
+    전체자리: app_commands.Range[int, 0, 1000],
+    남은자리: app_commands.Range[int, 0, 1000] = None,
+):
+  remaining = 전체자리 if 남은자리 is None else min(남은자리, 전체자리)
+  slots[매체.value] = {"total": int(전체자리), "remaining": int(remaining)}
+  save_slots()
+  await interaction.response.send_message(
+      f"✅ **{매체.name} 진행자** 자리를 **{slot_text(매체.value)}** 로"
+      " 설정했습니다.\n-# 입금 승인 시 남은 자리 -1, 라이센스 만료 시 +1 자동 반영",
+      embed=build_slot_embed(),
+      ephemeral=True,
+  )
+
+
+@bot.tree.command(
     name="보내기", description="[관리자] 봇이 대신 메시지를 작성하여 전송합니다."
 )
 @app_commands.describe(
@@ -1741,4 +1854,3 @@ if TOKEN:
   bot.run(TOKEN)
 else:
   print("오류: DISCORD_TOKEN 환경 변수가 설정되지 않았습니다.")
- 
