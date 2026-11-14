@@ -4,6 +4,8 @@ from datetime import datetime, timedelta
 import io
 import json
 import os
+import random
+import unicodedata
 import uuid
  
 import discord
@@ -59,6 +61,109 @@ user_licenses = {}
 user_ticket_state = {}
  
 is_recruiting = False
+
+
+# ==========================================
+# 1-0. 데이터 저장 (재시작/재배포해도 유지)
+# ==========================================
+# Railway는 재배포하면 파일이 지워져요. 꼭 Volume을 붙여 주세요.
+#   Railway 서비스 > Settings > Volumes > Mount Path: /data
+DATA_DIR = (
+    os.getenv("DATA_DIR")
+    or os.getenv("RAILWAY_VOLUME_MOUNT_PATH")
+    or os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+)
+os.makedirs(DATA_DIR, exist_ok=True)
+DATA_FILE = os.path.join(DATA_DIR, "seller_data.json")
+
+
+def _dt_out(v):
+  return v.isoformat() if isinstance(v, datetime) else v
+
+
+def _dt_in(v):
+  if isinstance(v, str):
+    try:
+      return datetime.fromisoformat(v)
+    except ValueError:
+      return None
+  return v
+
+
+def _snapshot() -> str:
+  data = {
+      "is_recruiting": is_recruiting,
+      "license_db": {
+          code: {**info, "expires_at": _dt_out(info.get("expires_at"))}
+          for code, info in license_db.items()
+      },
+      "user_licenses": {
+          str(uid): {**info, "expires_at": _dt_out(info.get("expires_at"))}
+          for uid, info in user_licenses.items()
+      },
+      "user_ticket_state": {
+          str(cid): st for cid, st in user_ticket_state.items()
+      },
+  }
+  return json.dumps(data, ensure_ascii=False, indent=1)
+
+
+_last_saved = None
+
+
+def save_data(force: bool = False):
+  """바뀐 게 있을 때만 파일에 저장 (임시 파일에 쓰고 바꿔치기)"""
+  global _last_saved
+  try:
+    text = _snapshot()
+    if not force and text == _last_saved:
+      return
+    tmp = DATA_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+      f.write(text)
+    os.replace(tmp, DATA_FILE)
+    _last_saved = text
+  except Exception as e:
+    print(f"[데이터] 저장 실패: {e}")
+
+
+def load_data():
+  global is_recruiting, _last_saved
+  try:
+    with open(DATA_FILE, "r", encoding="utf-8") as f:
+      data = json.load(f)
+  except FileNotFoundError:
+    print(f"[데이터] 저장 파일이 없어 새로 시작해요 - {DATA_FILE}")
+    return
+  except (ValueError, OSError) as e:
+    print(f"[데이터] 불러오기 실패, 새로 시작해요: {e}")
+    return
+  is_recruiting = bool(data.get("is_recruiting", False))
+  for code, info in data.get("license_db", {}).items():
+    info["expires_at"] = _dt_in(info.get("expires_at"))
+    license_db[code] = info
+  for uid, info in data.get("user_licenses", {}).items():
+    info["expires_at"] = _dt_in(info.get("expires_at"))
+    if info["expires_at"]:
+      user_licenses[int(uid)] = info
+  for cid, st in data.get("user_ticket_state", {}).items():
+    user_ticket_state[int(cid)] = st
+  _last_saved = _snapshot()
+  print(
+      f"[데이터] 불러오기 완료 - 라이센스 {len(license_db)}개, 사용 중"
+      f" {len(user_licenses)}명, 열린 티켓 {len(user_ticket_state)}개"
+  )
+
+
+if not (os.getenv("DATA_DIR") or os.getenv("RAILWAY_VOLUME_MOUNT_PATH")) and (
+    os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_PROJECT_ID")
+):
+  print(
+      "[데이터] ⚠️ Railway Volume이 연결되지 않았어요. 재배포하면 데이터가"
+      " 사라져요! Settings > Volumes 에서 Mount Path /data 로 붙여 주세요."
+  )
+
+load_data()
  
  
 # ==========================================
@@ -66,7 +171,7 @@ is_recruiting = False
 # ==========================================
 # 주의: 호스팅이 재배포 시 파일을 초기화하면 아래 기본값으로 돌아갑니다.
 #       그럴 땐 볼륨(영구 저장소)을 붙이고 PRICE_FILE 경로를 그쪽으로 지정하세요.
-PRICE_FILE = os.getenv("PRICE_FILE", "prices.json")
+PRICE_FILE = os.getenv("PRICE_FILE", os.path.join(DATA_DIR, "prices.json"))
  
 DEFAULT_PRICES = {
     "discord": {"3": 5000, "7": 10000, "14": 20000},
@@ -103,7 +208,7 @@ prices = load_prices()
 # 1-1-2. 진행자 자리 설정 (관리자가 /자리설정 으로 변경, 파일에 저장)
 #   표시 방식: 찬 자리/전체 자리  →  0/5 = 5자리 남음, 5/5 = 마감
 # ==========================================
-SLOT_FILE = os.getenv("SLOT_FILE", "slots.json")
+SLOT_FILE = os.getenv("SLOT_FILE", os.path.join(DATA_DIR, "slots.json"))
 
 DEFAULT_SLOTS = {
     "discord": {"total": 5, "used": 0},
@@ -163,6 +268,8 @@ def slot_left(media: str) -> int:
 FONT_CANDIDATES = [
     os.getenv("FONT_FILE", ""),
     "font.ttf",
+    "font.otf",
+    "Pretendard-Bold.otf",
     "fonts/font.ttf",
     "NanumGothicBold.ttf",
     "Pretendard-Bold.ttf",
@@ -188,7 +295,33 @@ def _rounded(draw, box, r, fill, outline=None, width=1):
   draw.rounded_rectangle(box, radius=r, fill=fill, outline=outline, width=width)
 
 
+_glyph_cache = {}
+
+
+def _has_glyph(font, ch: str) -> bool:
+  """폰트에 없는 글자(네모로 깨지는 글자)인지 확인"""
+  key = (id(font), ch)
+  if key not in _glyph_cache:
+    try:
+      missing = font.getmask("\uffff")
+      m = font.getmask(ch)
+      _glyph_cache[key] = not (
+          m.size == missing.size and bytes(m) == bytes(missing)
+      )
+    except Exception:
+      _glyph_cache[key] = True
+  return _glyph_cache[key]
+
+
+def _safe(text: str, font) -> str:
+  """꾸밈 글자(𝐀𝐁𝐂, ＡＢＣ 등)를 일반 글자로 바꾸고, 폰트에 없는 글자는 제거"""
+  text = unicodedata.normalize("NFKC", text)
+  out = "".join(ch for ch in text if ch == " " or _has_glyph(font, ch))
+  return " ".join(out.split()) or "-"
+
+
 def _center_text(draw, cx, y, text, font, fill):
+  text = _safe(text, font)
   w = draw.textlength(text, font=font)
   draw.text((cx - w / 2, y), text, font=font, fill=fill)
 
@@ -251,7 +384,7 @@ def render_slot_card(guild_name: str) -> io.BytesIO:
     # 상단 포인트 바
     _rounded(draw, (x + 30, y0 + 22, x + 90, y0 + 30), 4, accent)
 
-    draw.text((x + 30, y0 + 44), label, font=f_label, fill=ink)
+    draw.text((x + 30, y0 + 44), _safe(label, f_label), font=f_label, fill=ink)
 
     # 상태 뱃지
     pill_text = "마감" if full else "모집 중"
@@ -364,6 +497,158 @@ async def analyze_dual_window(image_bytes: bytes, mime: str) -> dict:
   return json.loads(response.choices[0].message.content)
  
  
+# ==========================================
+# 1-2-2. 토비 (AI 마스코트) 말투 설정 - 반말, 사람처럼
+# ==========================================
+TOBY_SYSTEM = """너는 이 디스코드 서버(로벅스·인게임 아이템 거래 서버)의 안내 담당 '토비'야.
+서버 사람들한테 친구처럼 반말로 직접 알려주는 게 네 일이야.
+
+[말투 - 꼭 지켜]
+- 100% 반말. "~요", "~습니다", "~세요", "~해주세요", "~드릴게요" 절대 쓰지 마. 한 글자라도 존댓말 나오면 안 돼.
+- 디코에서 친구한테 톡하듯 짧게. 보통 1~3문장.
+- ㅇㅇ, ㄴㄴ, ㅋㅋ, ㅠ 는 가끔만 자연스럽게.
+- 목록, 번호, 굵은 글씨, 제목 쓰지 마. 그냥 말로 해.
+- 이모지 거의 쓰지 마.
+- "물론이지", "좋은 질문", "도움이 됐으면", "언제든 물어봐", "궁금한 거 있으면" 같은 AI 말투 금지.
+- 질문 따라 말하지 말고 바로 답부터.
+- AI라는 말 먼저 꺼내지 마.
+
+[안내 방법 - 중요]
+- 네가 직접 설명해. "문의 채널에 물어봐", "관리자한테 물어봐" 식으로 떠넘기지 마.
+- 아래 서버 정보랑 [공지/규칙 내용]을 보고 답해. 방법을 물어보면 방법을 직접 말해주고, 필요하면 관련 채널을 <#채널ID> 그대로 붙여줘.
+- 문의하기 채널은 환불, 오류, 셀러 지원 같은 진짜 문제일 때만 알려줘.
+- 정보에 없는 건 지어내지 마. 아는 데까지 말하고 "그건 정확히는 모르겠어" 정도로만.
+
+[채널]
+- 서버 공지: <#1456729031591329896>
+- 서버 규칙: <#1456733958266945743>
+- 역할 등급 안내: <#1456746478109462743>
+- 이중창 인증하는 방법: <#1476162061875544175>
+- 재고 알림 받는 채널: <#1499698645610528789>
+- 셀러 신청 및 조건 확인: <#1513940818845499393>
+- 이벤트: <#1458177994056142888> / 이벤트 후기: <#1462403147237560374>
+- 구매로그: <#1457384858065047663> / 구매후기: <#1457384179535712473>
+- 로벅스 지급 방법: <#1545788637273260072>
+- 로벅스 계산: <#1524002196713111552>
+- 입고 요청: <#1476160902314070157>
+- 자유대화: <#1456729031591329900>
+- 명령어(봇 채널): <#1564993278682857572>
+- 문의하기(환불, 오류, 셀러 지원 등 / 쓸데없는 질문 X): <#1457035868819951911>
+
+[판매자별 채널]
+- 여제: 로벅스 <#1522816368859152506>, 기타 재고 <#1522816441827721318>, 구매 <#1522816720539095180>
+- 소뚜: 로벅스 <#1517466234642370651>, 인게임 재고 <#1517466254930084020>, 기타 재고 <#1517467447631024168>, 구매 <#1520805597899915375>
+- 파댕: 로벅스 <#1567095399708368986>, 구매 <#1567095426023297214>
+- 라프: 로벅스 <#1529484235696636075>, 기타 <#1529801660551921835>, 구매 <#1529484335927918874>
+- 쥬스: 로벅스 <#1519031827187236914>, 인게임 <#1520793737574486156>, 구매 <#1520797115196903536>
+- 재고는 각 판매자 재고 채널에서 보고, 사는 건 그 판매자 구매 채널에서 해.
+
+[거래 규칙]
+- 모든 거래 환불 안 됨
+- 입금하고 이중창 인증은 1분 안에
+- 거래 끝나고 계정 정지/회수는 서버 책임 아님 (보상/환불 X)
+- 욕설, 비방, 도배, 멘션테러, 재촉 금지 (어기면 지급 늦어짐)
+- 전화번호, 계좌번호 같은 개인정보 함부로 올리면 안 됨
+- 비매너, 스팸/홍보(DM 포함), 몰래 개인 거래하면 바로 제재/강퇴
+- Seller 역할 있는 사람만 판매 가능
+- 재고 없는데 티켓 열거나 쓸데없이 반복해서 열면 안 됨 (영구 이용 제한될 수 있음)"""
+
+# 토비 말투 예시 (AI가 따라 하도록)
+TOBY_EXAMPLES = [
+    ("로벅스 어디서 사?",
+     "판매자마다 로벅스 채널 따로 있어 ㅇㅇ 소뚜면 <#1517466234642370651> 에서 시세 보고 <#1520805597899915375> 에서 사면 돼"),
+    ("환불 돼?",
+     "ㄴㄴ 여기 거래는 전부 환불 안 돼. 사기 전에 한 번 더 확인하고 사"),
+    ("이중창이 뭐야",
+     "입금하고 은행 앱이랑 디코 화면 같이 보이게 찍는 거야. 입금하고 1분 안에 해야 돼. 자세한 건 <#1476162061875544175> 보면 사진으로 나와 있어"),
+]
+
+TOBY_EMPTY_REPLIES = ["왜 불렀어?"]
+
+# 공지·규칙 같은 채널 내용을 읽어서 토비가 직접 안내할 때 참고해요 (30분마다 새로 읽음)
+TOBY_KNOWLEDGE_CHANNELS = {
+    1456729031591329896: "서버 공지",
+    1456733958266945743: "서버 규칙",
+    1456746478109462743: "역할 등급 안내",
+    1476162061875544175: "이중창 인증하는 방법",
+    1513940818845499393: "셀러 신청 및 조건",
+    1545788637273260072: "로벅스 지급 방법",
+    1458177994056142888: "이벤트",
+}
+TOBY_KNOWLEDGE_TTL = 1800
+_toby_knowledge = {"at": None, "text": ""}
+
+
+def _message_text(m: discord.Message) -> str:
+  parts = [m.content or ""]
+  for e in m.embeds:
+    parts += [e.title or "", e.description or ""]
+    parts += [f"{f.name}: {f.value}" for f in e.fields]
+  for c in getattr(m, "components", []) or []:
+    for t in _walk_text(c):
+      parts.append(t)
+  return "\n".join(p for p in parts if p).strip()
+
+
+def _walk_text(comp):
+  content = getattr(comp, "content", None)
+  if isinstance(content, str):
+    yield content
+  for child in getattr(comp, "children", None) or getattr(comp, "components", None) or []:
+    yield from _walk_text(child)
+
+
+async def toby_knowledge(guild: discord.Guild) -> str:
+  now = datetime.now()
+  if _toby_knowledge["at"] and (now - _toby_knowledge["at"]).total_seconds() < TOBY_KNOWLEDGE_TTL:
+    return _toby_knowledge["text"]
+  blocks = []
+  for cid, label in TOBY_KNOWLEDGE_CHANNELS.items():
+    ch = guild.get_channel(cid) if guild else None
+    if ch is None or not hasattr(ch, "history"):
+      continue
+    try:
+      texts = []
+      async for m in ch.history(limit=15, oldest_first=False):
+        t = _message_text(m)
+        if t:
+          texts.append(t)
+      body = "\n---\n".join(reversed(texts))[:1800]
+      if body:
+        blocks.append(f"<{label} (<#{cid}>)>\n{body}")
+    except (discord.Forbidden, discord.HTTPException):
+      continue
+  _toby_knowledge["text"] = "\n\n".join(blocks)[:9000]
+  _toby_knowledge["at"] = now
+  return _toby_knowledge["text"]
+
+
+TOBY_MEMORY_TURNS = 4  # 사람마다 최근 대화 몇 번까지 기억할지
+TOBY_MEMORY_SEC = 600  # 10분 지나면 대화 기억 리셋
+toby_history = {}
+
+# AI가 습관처럼 붙이는 말 정리
+_TOBY_CUT = [
+    "도움이 되었으면 좋겠어",
+    "도움이 됐으면 좋겠어",
+    "궁금한 거 있으면 언제든",
+    "궁금한 점 있으면 언제든",
+    "더 궁금한 거 있으면",
+]
+
+
+def clean_toby_reply(text: str) -> str:
+  text = (text or "").strip()
+  # 마크다운 굵게/제목 제거
+  text = text.replace("**", "").replace("## ", "").replace("# ", "")
+  lines = [l for l in text.splitlines() if l.strip()]
+  lines = [l for l in lines if not any(c in l for c in _TOBY_CUT)] or lines
+  text = " ".join(l.strip().lstrip("-•* ").strip() for l in lines)
+  if text.startswith("토비:"):
+    text = text[3:].strip()
+  return text[:400] or "음 뭐라고 해야 할지 모르겠네 ㅋㅋ"
+
+
 # ==========================================
 # 1-3. 진행자 유형 안내 문구 (가격은 설정값에서 자동 반영)
 # ==========================================
@@ -511,10 +796,12 @@ async def create_application_ticket(
         ),
         color=0x34495E,
     )
-    await admin_panel_channel.send(
+    panel_msg = await admin_panel_channel.send(
         embed=admin_embed,
         view=AdminControlView(applicant=member, ticket_channel=ticket_channel),
     )
+    user_ticket_state[ticket_channel.id]["panel_message_id"] = panel_msg.id
+  save_data()
  
   log_embed = discord.Embed(title="[신청서 접수 기록]", color=0x3498DB)
   log_embed.add_field(
@@ -610,6 +897,8 @@ class LicenseRegisterModal(discord.ui.Modal, title="라이센스 코드 등록")
         "expires_at": expire_time,
     }
  
+    save_data()
+
     role = interaction.guild.get_role(LICENSE_ROLE_ID)
     if role:
       await interaction.user.add_roles(role)
@@ -883,13 +1172,43 @@ def _is_admin(interaction: discord.Interaction) -> bool:
  
  
 class AdminControlView(discord.ui.View):
- 
+  """관리자 제어 패널. 재시작 후에도 저장된 ID로 신청자/티켓을 다시 찾아요."""
+
   def __init__(
-      self, applicant: discord.Member, ticket_channel: discord.TextChannel
+      self,
+      applicant: discord.Member = None,
+      ticket_channel: discord.TextChannel = None,
+      applicant_id: int = None,
+      channel_id: int = None,
   ):
     super().__init__(timeout=None)
     self.applicant = applicant
     self.ticket_channel = ticket_channel
+    self.applicant_id = applicant.id if applicant else applicant_id
+    self.channel_id = ticket_channel.id if ticket_channel else channel_id
+
+  async def interaction_check(self, interaction: discord.Interaction) -> bool:
+    guild = interaction.guild
+    if self.ticket_channel is None:
+      self.ticket_channel = guild.get_channel(self.channel_id)
+    if self.ticket_channel is None:
+      await interaction.response.send_message(
+          "❌ 이 티켓 채널이 이미 삭제됐어요.", ephemeral=True
+      )
+      return False
+    if self.applicant is None:
+      self.applicant = guild.get_member(self.applicant_id)
+      if self.applicant is None:
+        try:
+          self.applicant = await guild.fetch_member(self.applicant_id)
+        except discord.HTTPException:
+          self.applicant = None
+    if self.applicant is None:
+      await interaction.response.send_message(
+          "❌ 신청자가 서버에 없어요.", ephemeral=True
+      )
+      return False
+    return True
  
   @discord.ui.button(
       label="개인정보 승인",
@@ -1028,6 +1347,7 @@ class AdminControlView(discord.ui.View):
         "user_id": None,
         "expires_at": None,
     }
+    save_data()
  
     completed_embed = discord.Embed(
         title="입금이 완료되었습니다",
@@ -1232,6 +1552,7 @@ class AdminControlView(discord.ui.View):
  
     await asyncio.sleep(5)
     user_ticket_state.pop(self.ticket_channel.id, None)
+    save_data()
     await self.ticket_channel.delete()
  
  
@@ -1488,6 +1809,7 @@ async def check_expired_licenses():
       change_used(info["media"], -1)
 
     del user_licenses[user_id]
+    save_data()
  
  
 # ==========================================
@@ -1500,61 +1822,59 @@ async def on_message(message):
   if message.author.bot:
     return
  
-  # ---------- 토비야 (AI 마스코트) ----------
+  # ---------- 토비야 (AI 마스코트, 반말) ----------
   if message.content.startswith("토비야"):
-    user_prompt = message.content[3:].strip()
- 
+    user_prompt = message.content[3:].strip(" ,.!?~")
+
     if not user_prompt:
-      await message.reply(
-          "네! 궁금한 점이 있으신가요? 예: `토비야 어디서 구매해?` 또는 `토비야 환불돼?`"
-      )
+      await message.reply(random.choice(TOBY_EMPTY_REPLIES))
       return
- 
+
     if not openai_client:
-      await message.reply(
-          "❌ OpenAI API 키가 설정되지 않아 답변할 수 없습니다."
-      )
+      await message.reply("아 지금 나 머리가 좀 멈췄어 ㅠ 관리자한테 물어봐줘")
       return
- 
+
     async with message.channel.typing():
       try:
-        system_instruction = (
-            "너는 이 디스코드 서버의 AI 마스코트 '토비'야.\n"
-            "반드시 군더더기 없이 짧고 핵심 위주로 한국어로 답변해.\n\n"
-            "[서버 안내 및 핵심 규칙]\n"
-            "1. 문의/상담: <#1457035868819951911> 채널 이용\n"
-            "2. 구매 후기 작성: <#1457384179535712473> 채널 이용\n"
-            "3. 재고 확인: '판매자 공간' 카테고리에 있는 채널 확인\n"
-            "4. 구매 방법: '판매자' 카테고리 맨 아래 '구매하기' 채널 확인\n"
-            "5. 거래 수칙 및 환불:\n"
-            "   - 모든 거래는 환불 불가능\n"
-            "   - 입금 후 이중창 인증은 1분 이내 진행\n"
-            "   - 거래 완료 후 계정 정지/회수 등의 문제는 서버에서 책임지지 않음"
-            " (보상/환불 불가)\n"
-            "   - 욕설, 비방, 도배, 멘션테러, 재촉 금지 (위반 시 지급 지연)\n"
-            "   - 개인정보(전화번호, 계좌번호 등) 무단 유출 엄금\n"
-            "6. 서버 수칙:\n"
-            "   - 비매너, 스팸/홍보(DM 포함), 무단 개인 거래 즉시 제재/강퇴\n"
-            "   - Seller 역할이 있는 유저만 판매 가능\n"
-            "   - 재고가 없거나 불필요한 반복 티켓 생성 금지 (영구 이용 제한"
-            " 가능)\n"
-            "   - 기타 항목은 서버 '이용안내' 스레드 참고"
-        )
- 
+        key = (message.channel.id, message.author.id)
+        history = [
+            h for h in toby_history.get(key, [])
+            if (datetime.now() - h["at"]).total_seconds() < TOBY_MEMORY_SEC
+        ]
+        knowledge = await toby_knowledge(message.guild)
+        system = TOBY_SYSTEM
+        if knowledge:
+          system += (
+              "\n\n[공지/규칙 내용 - 서버 채널에 실제로 올라와 있는 글]\n"
+              + knowledge
+          )
+        messages = [{"role": "system", "content": system}]
+        for q, a in TOBY_EXAMPLES:
+          messages.append({"role": "user", "content": q})
+          messages.append({"role": "assistant", "content": a})
+        for h in history:
+          messages.append({"role": h["role"], "content": h["content"]})
+        messages.append({"role": "user", "content": user_prompt})
+
         response = await openai_client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_instruction},
-                {"role": "user", "content": user_prompt},
-            ],
-            max_tokens=500,
+            messages=messages,
+            max_tokens=300,
+            temperature=0.8,
+            presence_penalty=0.3,
         )
-        ai_reply = response.choices[0].message.content
-        await message.reply(ai_reply)
+        ai_reply = clean_toby_reply(response.choices[0].message.content)
+
+        history.append({"role": "user", "content": user_prompt, "at": datetime.now()})
+        history.append({"role": "assistant", "content": ai_reply, "at": datetime.now()})
+        toby_history[key] = history[-TOBY_MEMORY_TURNS * 2:]
+
+        await message.reply(ai_reply, allowed_mentions=discord.AllowedMentions.none())
       except Exception as e:
-        await message.reply(f"❌ 답변 생성 중 오류가 발생했습니다: {e}")
+        print(f"토비 답변 오류: {e}")
+        await message.reply("어 잠깐 렉 걸렸나봐 ㅋㅋ 다시 한 번만 말해줘")
     return
- 
+
   state = user_ticket_state.get(message.channel.id)
   is_applicant = bool(state) and message.author.id == state["user_id"]
  
@@ -1822,6 +2142,7 @@ async def on_message(message):
 async def start_recruitment(interaction: discord.Interaction):
   global is_recruiting
   is_recruiting = True
+  save_data()
   await interaction.response.send_message(
       "✅ 진행자 신청 모집이 **시작되었습니다**. (티켓 생성 가능)",
       ephemeral=True,
@@ -1835,6 +2156,7 @@ async def start_recruitment(interaction: discord.Interaction):
 async def stop_recruitment(interaction: discord.Interaction):
   global is_recruiting
   is_recruiting = False
+  save_data()
   await interaction.response.send_message(
       "⛔ 진행자 신청 모집이 **종료되었습니다**. (티켓 생성 차단)",
       ephemeral=True,
@@ -1905,13 +2227,103 @@ async def show_price(interaction: discord.Interaction):
   await interaction.response.send_message(embed=embed, ephemeral=True)
  
  
+# ---------- 진행자 현황 패널 (Components V2 + 이미지) ----------
+class SlotPanelView(discord.ui.LayoutView):
+  """/진행자조회 패널: 현황 이미지 + 버튼"""
+
+  def __init__(self, with_image: bool = True):
+    super().__init__(timeout=None)
+
+    container = discord.ui.Container(accent_colour=PASTEL_PINK)
+    container.add_item(
+        discord.ui.TextDisplay(
+            "## ୨୧ 진행자 현황\n"
+            f"-# 마지막 갱신 <t:{int(datetime.now().timestamp())}:R>"
+        )
+    )
+    if with_image:
+      container.add_item(
+          discord.ui.MediaGallery(
+              discord.MediaGalleryItem("attachment://slots.png")
+          )
+      )
+    container.add_item(discord.ui.Separator())
+
+    row = discord.ui.ActionRow()
+    buttons = [
+        ("새로고침", discord.ButtonStyle.secondary, "slot_refresh",
+         self.refresh),
+        ("진행자 신청", discord.ButtonStyle.primary, "slot_apply",
+         self.apply),
+        ("조건 · 가격", discord.ButtonStyle.secondary, "slot_info",
+         self.info),
+        ("내 라이센스", discord.ButtonStyle.success, "slot_my_license",
+         self.my_license),
+    ]
+    for label, style, cid, cb in buttons:
+      btn = discord.ui.Button(
+          label=label, style=style, custom_id=cid
+      )
+      btn.callback = cb
+      row.add_item(btn)
+    container.add_item(row)
+    self.add_item(container)
+
+  async def refresh(self, interaction: discord.Interaction):
+    await interaction.response.defer()
+    file = await slot_card_file(interaction.guild.name)
+    await interaction.edit_original_response(
+        view=SlotPanelView(), attachments=[file]
+    )
+
+  async def apply(self, interaction: discord.Interaction):
+    if not is_recruiting:
+      await interaction.response.send_message(
+          "❌ 현재 진행자 모집 기간이 아닙니다.", ephemeral=True
+      )
+      return
+    if all(slot_left(m) <= 0 for m in slots):
+      await interaction.response.send_message(
+          "❌ 현재 모든 진행자 자리가 마감되었습니다.", ephemeral=True
+      )
+      return
+    await interaction.response.send_message(
+        "**정말로 신청하시겠습니까?**", view=ConfirmApplyView(), ephemeral=True
+    )
+
+  async def info(self, interaction: discord.Interaction):
+    await interaction.response.send_message(
+        embeds=[build_info_embed("discord"), build_info_embed("openchat")],
+        ephemeral=True,
+    )
+
+  async def my_license(self, interaction: discord.Interaction):
+    info = user_licenses.get(interaction.user.id)
+    if not info:
+      await interaction.response.send_message(
+          "등록된 라이센스가 없습니다. 메인 채널의 **라이센스 등록** 버튼으로"
+          " 코드를 등록해 주세요.",
+          ephemeral=True,
+      )
+      return
+    ts = int(info["expires_at"].timestamp())
+    media = MEDIA_LABEL.get(info.get("media"), "-")
+    await interaction.response.send_message(
+        f"🔑 **내 라이센스**\n"
+        f"• 매체: {media}\n"
+        f"• 코드: `{info['code']}`\n"
+        f"• 만료: <t:{ts}:F> (<t:{ts}:R>)",
+        ephemeral=True,
+    )
+
+
 @bot.tree.command(
     name="진행자조회", description="현재 진행자 자리 현황을 확인합니다."
 )
 async def check_slots(interaction: discord.Interaction):
   await interaction.response.defer()
   file = await slot_card_file(interaction.guild.name)
-  await interaction.followup.send(file=file)
+  await interaction.followup.send(view=SlotPanelView(), file=file)
 
 
 @bot.tree.command(
@@ -1981,16 +2393,43 @@ async def send_message_as_bot(
     )
  
  
+@tasks.loop(seconds=20)
+async def autosave():
+  save_data()
+
+
 @bot.event
 async def on_ready():
   print(f"로그인 성공: {bot.user.name}")
   try:
     bot.add_view(MainMenuViewV2())
     bot.add_view(TicketInfoView())  # 티켓 안내 버튼 (재시작 후에도 동작)
+    bot.add_view(SlotPanelView(with_image=False))  # 진행자 현황 버튼
   except Exception:
     pass
+  # 저장된 티켓의 관리자 패널 / 기간 선택 버튼 다시 연결
+  restored = 0
+  for cid, st in list(user_ticket_state.items()):
+    try:
+      if st.get("panel_message_id"):
+        bot.add_view(
+            AdminControlView(applicant_id=st["user_id"], channel_id=cid),
+            message_id=st["panel_message_id"],
+        )
+        restored += 1
+      if st.get("info_approved") and not st.get("days"):
+        bot.add_view(
+            PeriodSelectView(
+                channel_id=cid, user_id=st["user_id"], media=st["media"]
+            )
+        )
+    except Exception as e:
+      print(f"[데이터] 티켓 {cid} 버튼 복구 실패: {e}")
+  print(f"[데이터] 관리자 패널 {restored}개 복구")
   if not check_expired_licenses.is_running():
     check_expired_licenses.start()
+  if not autosave.is_running():
+    autosave.start()
   await bot.tree.sync()
  
  
@@ -1998,4 +2437,3 @@ if TOKEN:
   bot.run(TOKEN)
 else:
   print("오류: DISCORD_TOKEN 환경 변수가 설정되지 않았습니다.")
- 
