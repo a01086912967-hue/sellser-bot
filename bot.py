@@ -1958,18 +1958,18 @@ class SlotPanelView(discord.ui.LayoutView):
 
     row = discord.ui.ActionRow()
     buttons = [
-        ("새로고침", "🔄", discord.ButtonStyle.secondary, "slot_refresh",
+        ("새로고침", discord.ButtonStyle.secondary, "slot_refresh",
          self.refresh),
-        ("진행자 신청", "📝", discord.ButtonStyle.primary, "slot_apply",
+        ("진행자 신청", discord.ButtonStyle.primary, "slot_apply",
          self.apply),
-        ("조건 · 가격", "📋", discord.ButtonStyle.secondary, "slot_info",
+        ("조건 · 가격", discord.ButtonStyle.secondary, "slot_info",
          self.info),
-        ("내 라이센스", "🔑", discord.ButtonStyle.success, "slot_my_license",
+        ("내 라이센스", discord.ButtonStyle.success, "slot_my_license",
          self.my_license),
     ]
-    for label, emoji, style, cid, cb in buttons:
+    for label, style, cid, cb in buttons:
       btn = discord.ui.Button(
-          label=label, emoji=emoji, style=style, custom_id=cid
+          label=label, style=style, custom_id=cid
       )
       btn.callback = cb
       row.add_item(btn)
