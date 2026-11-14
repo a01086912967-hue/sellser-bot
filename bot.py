@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import io
 import json
 import os
+import unicodedata
 import uuid
  
 import discord
@@ -190,7 +191,33 @@ def _rounded(draw, box, r, fill, outline=None, width=1):
   draw.rounded_rectangle(box, radius=r, fill=fill, outline=outline, width=width)
 
 
+_glyph_cache = {}
+
+
+def _has_glyph(font, ch: str) -> bool:
+  """폰트에 없는 글자(네모로 깨지는 글자)인지 확인"""
+  key = (id(font), ch)
+  if key not in _glyph_cache:
+    try:
+      missing = font.getmask("\uffff")
+      m = font.getmask(ch)
+      _glyph_cache[key] = not (
+          m.size == missing.size and bytes(m) == bytes(missing)
+      )
+    except Exception:
+      _glyph_cache[key] = True
+  return _glyph_cache[key]
+
+
+def _safe(text: str, font) -> str:
+  """꾸밈 글자(𝐀𝐁𝐂, ＡＢＣ 등)를 일반 글자로 바꾸고, 폰트에 없는 글자는 제거"""
+  text = unicodedata.normalize("NFKC", text)
+  out = "".join(ch for ch in text if ch == " " or _has_glyph(font, ch))
+  return " ".join(out.split()) or "-"
+
+
 def _center_text(draw, cx, y, text, font, fill):
+  text = _safe(text, font)
   w = draw.textlength(text, font=font)
   draw.text((cx - w / 2, y), text, font=font, fill=fill)
 
@@ -253,7 +280,7 @@ def render_slot_card(guild_name: str) -> io.BytesIO:
     # 상단 포인트 바
     _rounded(draw, (x + 30, y0 + 22, x + 90, y0 + 30), 4, accent)
 
-    draw.text((x + 30, y0 + 44), label, font=f_label, fill=ink)
+    draw.text((x + 30, y0 + 44), _safe(label, f_label), font=f_label, fill=ink)
 
     # 상태 뱃지
     pill_text = "마감" if full else "모집 중"
@@ -1907,13 +1934,103 @@ async def show_price(interaction: discord.Interaction):
   await interaction.response.send_message(embed=embed, ephemeral=True)
  
  
+# ---------- 진행자 현황 패널 (Components V2 + 이미지) ----------
+class SlotPanelView(discord.ui.LayoutView):
+  """/진행자조회 패널: 현황 이미지 + 버튼"""
+
+  def __init__(self, with_image: bool = True):
+    super().__init__(timeout=None)
+
+    container = discord.ui.Container(accent_colour=PASTEL_PINK)
+    container.add_item(
+        discord.ui.TextDisplay(
+            "## ୨୧ 진행자 현황\n"
+            f"-# 마지막 갱신 <t:{int(datetime.now().timestamp())}:R>"
+        )
+    )
+    if with_image:
+      container.add_item(
+          discord.ui.MediaGallery(
+              discord.MediaGalleryItem("attachment://slots.png")
+          )
+      )
+    container.add_item(discord.ui.Separator())
+
+    row = discord.ui.ActionRow()
+    buttons = [
+        ("새로고침", "🔄", discord.ButtonStyle.secondary, "slot_refresh",
+         self.refresh),
+        ("진행자 신청", "📝", discord.ButtonStyle.primary, "slot_apply",
+         self.apply),
+        ("조건 · 가격", "📋", discord.ButtonStyle.secondary, "slot_info",
+         self.info),
+        ("내 라이센스", "🔑", discord.ButtonStyle.success, "slot_my_license",
+         self.my_license),
+    ]
+    for label, emoji, style, cid, cb in buttons:
+      btn = discord.ui.Button(
+          label=label, emoji=emoji, style=style, custom_id=cid
+      )
+      btn.callback = cb
+      row.add_item(btn)
+    container.add_item(row)
+    self.add_item(container)
+
+  async def refresh(self, interaction: discord.Interaction):
+    await interaction.response.defer()
+    file = await slot_card_file(interaction.guild.name)
+    await interaction.edit_original_response(
+        view=SlotPanelView(), attachments=[file]
+    )
+
+  async def apply(self, interaction: discord.Interaction):
+    if not is_recruiting:
+      await interaction.response.send_message(
+          "❌ 현재 진행자 모집 기간이 아닙니다.", ephemeral=True
+      )
+      return
+    if all(slot_left(m) <= 0 for m in slots):
+      await interaction.response.send_message(
+          "❌ 현재 모든 진행자 자리가 마감되었습니다.", ephemeral=True
+      )
+      return
+    await interaction.response.send_message(
+        "**정말로 신청하시겠습니까?**", view=ConfirmApplyView(), ephemeral=True
+    )
+
+  async def info(self, interaction: discord.Interaction):
+    await interaction.response.send_message(
+        embeds=[build_info_embed("discord"), build_info_embed("openchat")],
+        ephemeral=True,
+    )
+
+  async def my_license(self, interaction: discord.Interaction):
+    info = user_licenses.get(interaction.user.id)
+    if not info:
+      await interaction.response.send_message(
+          "등록된 라이센스가 없습니다. 메인 채널의 **라이센스 등록** 버튼으로"
+          " 코드를 등록해 주세요.",
+          ephemeral=True,
+      )
+      return
+    ts = int(info["expires_at"].timestamp())
+    media = MEDIA_LABEL.get(info.get("media"), "-")
+    await interaction.response.send_message(
+        f"🔑 **내 라이센스**\n"
+        f"• 매체: {media}\n"
+        f"• 코드: `{info['code']}`\n"
+        f"• 만료: <t:{ts}:F> (<t:{ts}:R>)",
+        ephemeral=True,
+    )
+
+
 @bot.tree.command(
     name="진행자조회", description="현재 진행자 자리 현황을 확인합니다."
 )
 async def check_slots(interaction: discord.Interaction):
   await interaction.response.defer()
   file = await slot_card_file(interaction.guild.name)
-  await interaction.followup.send(file=file)
+  await interaction.followup.send(view=SlotPanelView(), file=file)
 
 
 @bot.tree.command(
@@ -1989,6 +2106,7 @@ async def on_ready():
   try:
     bot.add_view(MainMenuViewV2())
     bot.add_view(TicketInfoView())  # 티켓 안내 버튼 (재시작 후에도 동작)
+    bot.add_view(SlotPanelView(with_image=False))  # 진행자 현황 버튼
   except Exception:
     pass
   if not check_expired_licenses.is_running():
